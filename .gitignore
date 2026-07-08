@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# Environments
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# ActiveGraph runtime state
+data/
+*.sqlite
+*.sqlite3
+*.db
+
+# Editors and OS files
+.DS_Store
+.idea/
+.vscode/
+
+# Local scratch
+scratch/
+tmp/

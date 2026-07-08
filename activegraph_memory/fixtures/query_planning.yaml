@@ -1,0 +1,19 @@
+queries:
+  - id: q_latest_launch_plan
+    query: "What is the latest launch plan?"
+    expected_query_type: latest
+    expected_risk_flags:
+      - stale_answer
+      - incomplete_coverage
+      - superseded_evidence
+  - id: q_exclusivity
+    query: "Did we ever agree to give them exclusivity?"
+    expected_query_type: negative_existence
+    expected_risk_flags:
+      - false_negative
+      - unsearched_corpus
+  - id: q_preference
+    query: "How does Yohei prefer article feedback on ActiveGraph?"
+    expected_query_type: preference
+    expected_risk_flags:
+      - overgeneralized_preference
