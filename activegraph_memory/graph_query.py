@@ -176,6 +176,7 @@ _GENERIC_MATCH_TOKENS = {
     "how",
     "includ",
     "including",
+    "keep",
     "kitchen",
     "last",
     "many",
@@ -194,6 +195,7 @@ _GENERIC_MATCH_TOKENS = {
     "money",
     "month",
     "much",
+    "old",
     "number",
     "one",
     "paid",
@@ -208,6 +210,7 @@ _GENERIC_MATCH_TOKENS = {
     "saving",
     "savings",
     "since",
+    "recent",
     "set",
     "spend",
     "spent",
@@ -231,6 +234,7 @@ _GENERIC_MATCH_TOKENS = {
     "items",
     "what",
     "when",
+    "where",
     "went",
     "week",
     "weeks",
@@ -1188,19 +1192,31 @@ def _order_result(
     ]
     selected.sort(key=lambda item: (item[1], item[2].sort_key, item[0]))
     selected_events = [event for _, _, event in selected]
+    selected_dates = [dt for _, dt, _ in selected]
+    ambiguous_same_date = len(selected_dates) >= 2 and len(set(selected_dates)) < len(selected_dates)
 
     metadata: dict[str, Any] = {
         "operands": operands,
         "found_operands": found_operands,
         "missing_operands": missing_operands,
         "comparison_complete": not missing_operands,
-        "answer_confidence": 0.86 if not missing_operands else 0.9,
+        "answer_confidence": 0.55 if ambiguous_same_date else (0.86 if not missing_operands else 0.9),
+        "ambiguous_same_date": ambiguous_same_date,
     }
     if missing_operands:
         answer = (
             "Insufficient comparison evidence: "
             f"found dated evidence for {_join_labels(found_operands) or 'none'}, "
             f"but not for {_join_labels(missing_operands)}."
+        )
+    elif ambiguous_same_date:
+        tied = _join_labels([
+            operand for operand, dt, _ in selected if selected_dates.count(dt) > 1
+        ])
+        answer = (
+            "Ambiguous temporal order: the available evidence resolves "
+            f"{tied or 'multiple operands'} to the same date. Use source text "
+            "and relative-date wording before choosing a first item."
         )
     else:
         ordered = [f"{operand} ({dt.isoformat()})" for operand, dt, _ in selected]

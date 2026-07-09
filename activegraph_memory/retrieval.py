@@ -47,6 +47,8 @@ _QUERY_STOPWORDS = {
     "are",
     "before",
     "can",
+    "complement",
+    "current",
     "currently",
     "did",
     "does",
@@ -58,14 +60,19 @@ _QUERY_STOPWORDS = {
     "how",
     "including",
     "into",
+    "keep",
     "many",
     "much",
     "need",
+    "old",
     "our",
     "previous",
     "recent",
     "remind",
     "since",
+    "setup",
+    "some",
+    "suggest",
     "that",
     "the",
     "this",
@@ -79,6 +86,7 @@ _QUERY_STOPWORDS = {
     "where",
     "which",
     "with",
+    "would",
     "you",
 }
 _VALUATION_RATIO_TERMS = {
@@ -135,6 +143,56 @@ _PREFERENCE_SIGNAL_RE = re.compile(
     r"better|worse|sleep quality|wind down)\b",
     re.IGNORECASE,
 )
+_ANSWER_PACKET_GENERIC_TOKENS = {
+    *_QUERY_STOPWORDS,
+    "accessory",
+    "accessori",
+    "ago",
+    "amount",
+    "answer",
+    "before",
+    "current",
+    "currently",
+    "cost",
+    "day",
+    "days",
+    "device",
+    "first",
+    "get",
+    "got",
+    "how",
+    "keep",
+    "latest",
+    "many",
+    "month",
+    "months",
+    "most",
+    "new",
+    "now",
+    "old",
+    "previous",
+    "previously",
+    "recent",
+    "second",
+    "setup",
+    "some",
+    "suggest",
+    "third",
+    "time",
+    "times",
+    "total",
+    "week",
+    "weeks",
+    "where",
+    "who",
+    "year",
+    "years",
+}
+_LATEST_EVENT_AMBIGUITY_RE = re.compile(
+    r"\b(before|previous|previously|used to|plans?|planning|next|upcoming|"
+    r"will|would like|thinking of|considering|hoping to|want(?:s|ed)? to)\b",
+    re.IGNORECASE,
+)
 _CONCEPT_TOKEN_EXPANSIONS = {
     "phone": {
         "android",
@@ -161,7 +219,6 @@ _CONCEPT_TOKEN_EXPANSIONS = {
         "charging",
         "device",
         "iphone",
-        "phone",
         "power",
         "protector",
         "screen",
@@ -175,7 +232,6 @@ _CONCEPT_TOKEN_EXPANSIONS = {
         "charging",
         "device",
         "iphone",
-        "phone",
         "power",
         "protector",
         "screen",
@@ -189,7 +245,6 @@ _CONCEPT_TOKEN_EXPANSIONS = {
         "charging",
         "device",
         "iphone",
-        "phone",
         "power",
         "protector",
         "screen",
@@ -280,6 +335,29 @@ _CONCEPT_TOKEN_EXPANSIONS = {
         "quickbooks",
         "website",
     },
+    "photography": {
+        "a7r",
+        "bag",
+        "camera",
+        "flash",
+        "godox",
+        "lens",
+        "lenses",
+        "photo",
+        "photographer",
+        "sony",
+    },
+    "camera": {
+        "a7r",
+        "bag",
+        "flash",
+        "godox",
+        "lens",
+        "lenses",
+        "photo",
+        "photography",
+        "sony",
+    },
 }
 
 
@@ -333,6 +411,7 @@ def retrieve_memory(
     token_counter = token_counter or _rough_token_count
     assistant_exact_source = _requires_assistant_exact_source(memory_query.query)
     preference_advice_query = _looks_like_preference_or_advice_query(memory_query.query, query_type=query_type)
+    candidate_core_terms = _answer_packet_core_terms(memory_query.query)
 
     temporal_targets = _query_temporal_targets(memory_query.query, memory_query.time_anchor)
     claim_scores = claim_scores or {}
@@ -477,7 +556,11 @@ def retrieve_memory(
                 truncated = True
 
     if graph_result is not None and graph_result.answer_hint and graph_context_ok:
-        include_answer_candidate = _include_graph_answer_candidate(graph_result)
+        include_answer_candidate = _include_graph_answer_candidate(
+            graph_result,
+            query=memory_query.query,
+            query_type=query_type,
+        )
         for max_rows in _packet_row_options(graph_result):
             rendered_graph = _render_answer_packet(
                 index,
@@ -500,7 +583,7 @@ def retrieve_memory(
             else:
                 minimal_graph = (
                     f"[graph-query: {graph_result.operation}]\n"
-                    "Computed answer candidate withheld because reducer confidence is low."
+                    "Computed answer candidate withheld because reducer confidence or query coverage is low."
                 )
             graph_cost = token_counter(minimal_graph) + 2
             if fits(graph_cost):
@@ -543,11 +626,23 @@ def retrieve_memory(
             record = index.by_claim_id[candidate.uid]
             if skip_assistant_fallback and record.claim.metadata.get("role") == "assistant":
                 continue
+            if not _fallback_candidate_matches_query(
+                record.text,
+                query_type=query_type,
+                core_terms=candidate_core_terms,
+            ):
+                continue
             add_claim(record)
             continue
 
         turn = index.by_turn_id[candidate.uid]
         if skip_assistant_fallback and turn.role == "assistant":
+            continue
+        if not _fallback_candidate_matches_query(
+            turn.text,
+            query_type=query_type,
+            core_terms=candidate_core_terms,
+        ):
             continue
         add_turn(turn, direct=True)
 
@@ -907,18 +1002,128 @@ def _looks_like_preference_or_advice_query(query: str, *, query_type: str) -> bo
     return query_type == "preference" or bool(_PREFERENCE_ADVICE_RE.search(query))
 
 
-def _include_graph_answer_candidate(graph_result: Any) -> bool:
+def _include_graph_answer_candidate(graph_result: Any, *, query: str, query_type: str) -> bool:
     metadata = getattr(graph_result, "metadata", {}) or {}
     answer_hint = str(getattr(graph_result, "answer_hint", "") or "")
     if re.match(r"^(No matching|Insufficient)\b", answer_hint, re.IGNORECASE):
         return True
     answer_confidence = metadata.get("answer_confidence")
-    if answer_confidence is None:
-        return True
-    try:
-        return float(answer_confidence) >= _GRAPH_ANSWER_CONFIDENCE_FLOOR
-    except (TypeError, ValueError):
+    if answer_confidence is not None:
+        try:
+            if float(answer_confidence) < _GRAPH_ANSWER_CONFIDENCE_FLOOR:
+                return False
+        except (TypeError, ValueError):
+            return False
+
+    operation = str(getattr(graph_result, "operation", ""))
+    rows = list(getattr(graph_result, "evidence_rows", []) or [])
+    if operation in {"temporal/latest", "current/latest"} or query_type in {"current", "latest", "final"}:
+        if _latest_answer_candidate_is_ambiguous(query=query, rows=rows):
+            return False
+        if _missing_core_query_terms(query, rows[:1]):
+            return False
+    if operation == "temporal/order":
+        if metadata.get("ambiguous_same_date"):
+            return False
+        if _missing_core_query_terms(query, rows):
+            return False
+    if operation in {"aggregate/sum", "aggregate/difference"} and _missing_required_component_terms(query, rows):
         return False
+    return True
+
+
+def _latest_answer_candidate_is_ambiguous(*, query: str, rows: list[dict[str, Any]]) -> bool:
+    if not rows:
+        return False
+    query_lower = query.lower()
+    if "previous" in query_lower or "previously" in query_lower:
+        return False
+    top_event = str(rows[0].get("event") or "")
+    return bool(_LATEST_EVENT_AMBIGUITY_RE.search(top_event))
+
+
+def _missing_core_query_terms(query: str, rows: list[dict[str, Any]]) -> bool:
+    core_terms = _answer_packet_core_terms(query)
+    if not core_terms:
+        return False
+    row_tokens: set[str] = set()
+    for row in rows:
+        row_tokens.update(claim_tokens(str(row.get("event") or "")))
+        for category in row.get("categories") or []:
+            row_tokens.update(claim_tokens(str(category)))
+        for quantity in row.get("quantities") or []:
+            row_tokens.update(claim_tokens(str(quantity)))
+    missing = {
+        term
+        for term in core_terms
+        if term not in row_tokens
+        and not (_CONCEPT_TOKEN_EXPANSIONS.get(term, set()) & row_tokens)
+    }
+    if not missing:
+        return False
+    # One unmatched term is often a harmless paraphrase. Multiple unmatched
+    # object terms usually means the reducer found a neighboring topic instead.
+    return len(missing) >= 2 or len(missing) == len(core_terms)
+
+
+def _missing_required_component_terms(query: str, rows: list[dict[str, Any]]) -> bool:
+    components = _query_component_term_sets(query)
+    if len(components) < 2:
+        return False
+    row_tokens: set[str] = set()
+    for row in rows:
+        row_tokens.update(claim_tokens(str(row.get("event") or "")))
+        for category in row.get("categories") or []:
+            row_tokens.update(claim_tokens(str(category)))
+    covered = 0
+    for component in components:
+        hits = sum(
+            1
+            for term in component
+            if term in row_tokens or (_CONCEPT_TOKEN_EXPANSIONS.get(term, set()) & row_tokens)
+        )
+        if hits >= min(2, len(component)):
+            covered += 1
+    return covered < len(components)
+
+
+def _query_component_term_sets(query: str) -> list[set[str]]:
+    if not re.search(r"\b(and|plus|with)\b", query, re.IGNORECASE):
+        return []
+    # Keep this deliberately conservative. It is meant to catch conjunctive
+    # object requests where a graph reducer found only one side of the query,
+    # not to police every broad aggregate.
+    tail = query
+    for marker in (" of ", " for ", " between "):
+        if marker in tail.lower():
+            tail = tail.lower().split(marker, 1)[1]
+            break
+    tail = re.split(r"[?.!]", tail, maxsplit=1)[0]
+    parts = re.split(r"\s+(?:and|plus|with)\s+", tail, flags=re.IGNORECASE)
+    out = []
+    for part in parts:
+        terms = _answer_packet_core_terms(part)
+        if terms:
+            out.append(terms)
+    return out
+
+
+def _answer_packet_core_terms(query: str) -> set[str]:
+    return {
+        token
+        for token in claim_tokens(query)
+        if token not in _ANSWER_PACKET_GENERIC_TOKENS and not token.isdigit()
+    }
+
+
+def _fallback_candidate_matches_query(text: str, *, query_type: str, core_terms: set[str]) -> bool:
+    if query_type not in {"current", "latest", "final"} or not core_terms:
+        return True
+    tokens = claim_tokens(text)
+    return any(
+        term in tokens or (_CONCEPT_TOKEN_EXPANSIONS.get(term, set()) & tokens)
+        for term in core_terms
+    )
 
 
 def _dynamic_expansion_plan(
@@ -1154,8 +1359,8 @@ def _render_answer_packet(
         lines.append(f"Computed answer candidate: {graph_result.answer_hint}")
     if graph_result.answer_hint and not include_answer_candidate:
         lines.append(
-            "Computed answer candidate withheld: reducer confidence is below the "
-            "answer threshold; use the evidence rows and raw source turns instead."
+            "Computed answer candidate withheld: reducer confidence or query coverage "
+            "is below the answer threshold; use the evidence rows and raw source turns instead."
         )
     guidance = (
         "Use any computed answer only when the evidence rows match the question; "

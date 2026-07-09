@@ -1661,3 +1661,157 @@ def test_relative_date_lookup_renders_near_date_milestone_source_packet():
     assert "[memory-date-packet]" in result.context_text
     assert "signed a contract with my first client" in result.context_text
     assert result.metadata["temporal_target_context_rendered"] is True
+
+
+def test_current_graph_match_requires_specific_object_terms():
+    turns = [
+        _turn("sneaker1", 0, 0, "user", "I keep my old sneakers in a shoe rack in my closet.", "2023-05-29"),
+        _turn("moto1", 1, 0, "user", "I am thinking of listing my old motorcycle.", "2023-06-16"),
+    ]
+    claims = [
+        ExtractedClaimInput(
+            text="The user keeps old sneakers in a shoe rack in their closet.",
+            session_id="sneaker1",
+            session_date="2023-05-29",
+            session_idx=0,
+            role="user",
+            mentioned_turn_idxs=(0,),
+        ),
+        ExtractedClaimInput(
+            text="The user owns an old motorcycle.",
+            session_id="moto1",
+            session_date="2023-06-16",
+            session_idx=1,
+            role="user",
+            mentioned_turn_idxs=(0,),
+        ),
+    ]
+    index = compile_memory_index(turns=turns, claims=claims)
+
+    result = retrieve_memory(
+        index,
+        "Where do I currently keep my old sneakers?",
+        query_id="current-sneakers",
+        question_date="2023/06/20 (Tue)",
+        token_budget=500,
+    )
+
+    graph_events = [row["event"] for row in result.metadata["graph_query"]["evidence_rows"]]
+    assert "The user owns an old motorcycle." not in graph_events
+    assert "shoe rack" in result.context_text
+
+
+def test_latest_candidate_withholds_prior_or_planned_event_rows():
+    turns = [
+        _turn("paris1", 0, 0, "user", "We just went to Paris as a family last month.", "2023-05-26"),
+        _turn("japan1", 1, 0, "user", "I have been to Japan before on a family trip.", "2023-05-27"),
+    ]
+    claims = [
+        ExtractedClaimInput(
+            text="The user went to Paris as a family last month.",
+            session_id="paris1",
+            session_date="2023-05-26",
+            session_idx=0,
+            role="user",
+            mentioned_turn_idxs=(0,),
+        ),
+        ExtractedClaimInput(
+            text="The user has been to Japan before on a family trip.",
+            session_id="japan1",
+            session_date="2023-05-27",
+            session_idx=1,
+            role="user",
+            mentioned_turn_idxs=(0,),
+        ),
+    ]
+    index = compile_memory_index(turns=turns, claims=claims)
+
+    result = retrieve_memory(
+        index,
+        "Where did I go on my most recent family trip?",
+        query_id="recent-family-trip",
+        question_date="2023/05/30 (Tue)",
+        token_budget=600,
+    )
+
+    assert "[graph-query: temporal/latest]" in result.context_text
+    assert "Computed answer candidate withheld" in result.context_text
+    assert "Computed answer candidate: Latest matching evidence" not in result.context_text
+    assert result.metadata["graph_answer_candidate_rendered"] is False
+
+
+def test_sum_candidate_withholds_when_query_components_are_missing():
+    turns = [
+        _turn(
+            "lola1",
+            0,
+            0,
+            "user",
+            "I purchased flea and tick prevention medication for Lola for $25.",
+            "2023-05-30",
+        )
+    ]
+    claims = [
+        ExtractedClaimInput(
+            text="The user purchased flea and tick prevention medication for Lola for $25.",
+            session_id="lola1",
+            session_date="2023-05-30",
+            session_idx=0,
+            role="user",
+            mentioned_turn_idxs=(0,),
+        )
+    ]
+    index = compile_memory_index(turns=turns, claims=claims)
+
+    result = retrieve_memory(
+        index,
+        "What is the total cost of Lola's vet visit and flea medication?",
+        query_id="lola-cost",
+        question_date="2023/05/30 (Tue)",
+        token_budget=500,
+    )
+
+    assert "[graph-query: aggregate/sum]" in result.context_text
+    assert "Computed answer candidate withheld" in result.context_text
+    assert "Computed answer candidate: Computed sum: $25" not in result.context_text
+    assert result.metadata["graph_answer_candidate_rendered"] is False
+
+
+def test_temporal_order_withholds_same_date_first_candidate():
+    turns = [
+        _turn("beach1", 0, 0, "user", "I met Mark and Sarah during a beach trip.", "2023-05-28"),
+        _turn("charity1", 1, 0, "user", "I met Tom at a charity event.", "2023-05-28"),
+    ]
+    claims = [
+        ExtractedClaimInput(
+            text="The user met Mark and Sarah during a beach trip.",
+            session_id="beach1",
+            session_date="2023-05-28",
+            session_idx=0,
+            role="user",
+            mentioned_turn_idxs=(0,),
+        ),
+        ExtractedClaimInput(
+            text="The user met Tom at a charity event.",
+            session_id="charity1",
+            session_date="2023-05-28",
+            session_idx=1,
+            role="user",
+            mentioned_turn_idxs=(0,),
+        ),
+    ]
+    index = compile_memory_index(turns=turns, claims=claims)
+
+    result = retrieve_memory(
+        index,
+        "Who did I meet first, Mark and Sarah or Tom?",
+        query_id="meet-first",
+        question_date="2023/05/30 (Tue)",
+        token_budget=500,
+    )
+
+    assert result.metadata["graph_query"]["operation"] == "temporal/order"
+    assert result.metadata["graph_query"]["ambiguous_same_date"] is True
+    assert "Computed answer candidate withheld" in result.context_text
+    assert "First: Mark" not in result.context_text
+    assert result.metadata["graph_answer_candidate_rendered"] is False

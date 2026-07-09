@@ -274,10 +274,12 @@ def infer_query_type(query: str) -> QueryType:
         return "negative_existence"
     if _matches_any(text, _TEMPORAL_QUANTITY_PATTERNS):
         return "temporal"
-    if _matches_any(text, _AGGREGATE_PATTERNS):
-        return "aggregate"
     if _matches_any(text, _TEMPORAL_SEQUENCE_PATTERNS):
         return "temporal"
+    if _matches_any(text, _PREFERENCE_PATTERNS):
+        return "preference"
+    if _matches_any(text, _AGGREGATE_PATTERNS):
+        return "aggregate"
     if _matches_any(text, _LATEST_PATTERNS):
         if re.search(r"\bcurrent\b|\bcurrently\b|\bas of now\b", text):
             return "current"
@@ -288,8 +290,6 @@ def infer_query_type(query: str) -> QueryType:
         return "final"
     if _matches_any(text, _DECISION_RECONSTRUCTION_PATTERNS):
         return "decision_reconstruction"
-    if _matches_any(text, _PREFERENCE_PATTERNS):
-        return "preference"
     if _matches_any(text, _TEMPORAL_PATTERNS):
         return "temporal"
     if re.search(r"\bwhy\b|\bhow\b|\bcompare\b|\brelationship between\b", text):

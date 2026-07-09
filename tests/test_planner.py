@@ -14,6 +14,10 @@ from activegraph_memory.settings import ActiveGraphMemorySettings
         ("How many launch docs do we have?", "aggregate"),
         ("Why did we change the pricing after the calls?", "decision_reconstruction"),
         ("What tone does Yohei prefer for article feedback?", "preference"),
+        (
+            "Can you suggest some accessories that would complement my current photography setup?",
+            "preference",
+        ),
         ("What was true as of July 3?", "temporal"),
         ("What is the order of the museums I visited from earliest to latest?", "temporal"),
         ("Find where Sarah approved the budget.", "semantic_lookup"),
