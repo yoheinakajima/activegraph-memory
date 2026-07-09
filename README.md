@@ -125,6 +125,19 @@ result = retrieve_memory(
 )
 ```
 
+`compile_memory_index` now also builds a compact graph-query projection:
+
+- `EntityRef` rows for normalized entity-like references
+- `CategoryRef` rows for deterministic coarse categories
+- `MemoryEventRecord` rows with predicate, category ids, quantities, temporal refs, event dates, claim id, and source-turn ids
+
+For aggregate and temporal queries, `retrieve_memory` first runs an executable
+graph query over that projection. It can compute counts, sums, and
+chronological evidence rows before packing normal claim/source context. The
+rendered context starts with a `[graph-query: ...]` block when a reducer ran.
+This keeps arithmetic and timeline work deterministic while preserving the raw
+log evidence below it.
+
 The retriever returns context text plus structured artifacts:
 
 - `RetrievalPlan`
@@ -135,6 +148,10 @@ The retriever returns context text plus structured artifacts:
 
 Claim headers are rendered above source turns, so semantic memory acts as an
 index into the event log rather than a replacement for the log.
+
+The default standalone retrieval budget is `10000` rough tokens. Benchmarks can
+still pass a smaller `token_budget` explicitly when comparing constrained
+retrieval settings.
 
 ## Behavior Map
 

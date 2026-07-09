@@ -40,6 +40,20 @@ A temporal phrase and its resolved interval when deterministic resolution is pos
 
 A numeric claim with owner, property, value, unit, exactness, and source text.
 
+## Runtime Projection
+
+The standalone compiler derives additional Python dataclasses from the source
+log and claims:
+
+- `EntityRef`: normalized entity-like labels and aliases.
+- `CategoryRef`: deterministic coarse categories used for query filtering.
+- `MemoryEventRecord`: predicate, entity refs, category ids, quantities,
+  temporal refs, event dates, claim id, source-turn ids, and sort key.
+
+These rows are derived indexes, not replacement graph objects. They make count,
+sum, and temporal reducers executable while preserving the original source-turn
+and claim provenance.
+
 ### `memory_policy`
 
 Policy data for governing memory planning, retrieval, and answering.

@@ -34,9 +34,20 @@ Status: helper functions exist; runtime behavior still needs full integration te
 
 Status: implemented as pure helper/runtime code. `retrieve_memory` returns
 `EvidenceBundle`, `CoverageReport`, confidence, epistemic status, and selected
-evidence ids. Graph behavior is still pending.
+evidence ids. A graph-visible behavior wrapper for retrieval is still pending.
 
-## Phase 5 - Temporal, Conflict, Supersession
+## Phase 5 - Compiled Graph Query
+
+- Compile entity-like refs, coarse category refs, and event rows from claims
+- Attach quantities, temporal refs, predicates, event dates, claim ids, and source-turn ids
+- Run deterministic count, sum, and chronological reducers before context packing
+- Render computed graph-query rows into retrieval context
+
+Status: implemented as the first deterministic pass. The taxonomy and predicate
+rules are intentionally lightweight; richer extraction, typed relations, and
+domain-specific schemas remain future work.
+
+## Phase 6 - Temporal, Conflict, Supersession
 
 - Temporal reference extraction and resolution
 - Conflict and supersession detection
@@ -49,7 +60,7 @@ supersession metadata. The retriever renders normalized simple relative dates
 and durations into claim headers. Full conflict detection and graph mutation
 behaviors are still pending.
 
-## Phase 6 - Benchmarks And Evals
+## Phase 7 - Benchmarks And Evals
 
 - LongMemEval-style fixtures
 - Query class evaluation

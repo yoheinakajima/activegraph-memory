@@ -10,6 +10,7 @@ from typing import Any, Callable, Iterable
 
 from .compiler import MemoryClaimRecord, MemoryIndex, SourceTurn, claim_tokens
 from .coverage import build_coverage_report
+from .graph_query import run_graph_query
 from .object_types import EvidenceBundle, MemoryQuery, RetrievalPlan
 from .planner import plan_query
 from .scoring import MemoryConfidence, confidence_vector, select_epistemic_status
@@ -51,7 +52,7 @@ def retrieve_memory(
     *,
     query_id: str = "query",
     question_date: str | None = None,
-    token_budget: int = 2500,
+    token_budget: int = 10000,
     claim_scores: dict[str, float] | None = None,
     turn_scores: dict[str, float] | None = None,
     token_counter: TokenCounter | None = None,
@@ -90,10 +91,17 @@ def retrieve_memory(
     )
 
     candidates = _rank_candidates(index, scored_claims, scored_turns, query_type=query_type)
+    graph_result = run_graph_query(
+        index,
+        memory_query.query,
+        query_type=query_type,
+        anchor_time=memory_query.time_anchor,
+    )
     selected_claim_ids: list[str] = []
     selected_turn_ids: set[str] = set()
     selected_direct_turn_ids: set[str] = set()
     selected_claim_set: set[str] = set()
+    graph_context = ""
     running = 0
     truncated = False
 
@@ -104,39 +112,71 @@ def retrieve_memory(
         nonlocal running
         running += cost
 
+    def add_claim(record: MemoryClaimRecord) -> bool:
+        nonlocal truncated
+        if record.claim_id in selected_claim_set:
+            return True
+        header = _claim_header(record)
+        cost = token_counter(header) + 1
+        new_turn_ids = [
+            turn_id
+            for turn_id in record.source_turn_ids
+            if turn_id in index.by_turn_id and turn_id not in selected_turn_ids
+        ]
+        for turn_id in new_turn_ids:
+            cost += token_counter(index.by_turn_id[turn_id].text) + 1
+        if not fits(cost):
+            truncated = True
+            return False
+        add_cost(cost)
+        selected_claim_ids.append(record.claim_id)
+        selected_claim_set.add(record.claim_id)
+        selected_turn_ids.update(new_turn_ids)
+        return True
+
+    def add_turn(turn: SourceTurn, *, direct: bool = False) -> bool:
+        nonlocal truncated
+        if turn.turn_id in selected_turn_ids:
+            if direct:
+                selected_direct_turn_ids.add(turn.turn_id)
+            return True
+        cost = token_counter(turn.text) + 2
+        if not fits(cost):
+            truncated = True
+            return False
+        add_cost(cost)
+        selected_turn_ids.add(turn.turn_id)
+        if direct:
+            selected_direct_turn_ids.add(turn.turn_id)
+        return True
+
+    if graph_result is not None and graph_result.answer_hint:
+        rendered_graph = graph_result.render()
+        graph_cost = token_counter(rendered_graph) + 2
+        if fits(graph_cost):
+            graph_context = rendered_graph
+            add_cost(graph_cost)
+        else:
+            truncated = True
+        for claim_id in graph_result.selected_claim_ids:
+            record = index.by_claim_id.get(claim_id)
+            if record is not None:
+                add_claim(record)
+        for turn_id in graph_result.selected_turn_ids:
+            turn = index.by_turn_id.get(turn_id)
+            if turn is not None:
+                add_turn(turn)
+
     for candidate in candidates:
         if candidate.score <= 0.0 and selected_claim_ids:
             break
         if candidate.kind == "claim":
             record = index.by_claim_id[candidate.uid]
-            header = _claim_header(record)
-            cost = token_counter(header) + 1
-            new_turn_ids = [
-                turn_id
-                for turn_id in record.source_turn_ids
-                if turn_id in index.by_turn_id and turn_id not in selected_turn_ids
-            ]
-            for turn_id in new_turn_ids:
-                cost += token_counter(index.by_turn_id[turn_id].text) + 1
-            if not fits(cost):
-                truncated = True
-                continue
-            add_cost(cost)
-            selected_claim_ids.append(record.claim_id)
-            selected_claim_set.add(record.claim_id)
-            selected_turn_ids.update(new_turn_ids)
+            add_claim(record)
             continue
 
         turn = index.by_turn_id[candidate.uid]
-        if turn.turn_id in selected_turn_ids:
-            continue
-        cost = token_counter(turn.text) + 2
-        if not fits(cost):
-            truncated = True
-            continue
-        add_cost(cost)
-        selected_turn_ids.add(turn.turn_id)
-        selected_direct_turn_ids.add(turn.turn_id)
+        add_turn(turn, direct=True)
 
     rendered_turn_ids = sorted(selected_turn_ids, key=lambda tid: index.by_turn_id[tid].sort_key)
     context_text = _render_context(
@@ -144,6 +184,7 @@ def retrieve_memory(
         selected_claim_ids=selected_claim_ids,
         selected_turn_ids=rendered_turn_ids,
         selected_direct_turn_ids=selected_direct_turn_ids,
+        prefix_text=graph_context,
     )
     searched_sessions = _sessions_for_turns(index, rendered_turn_ids)
     not_searched = [sid for sid in index.session_ids if sid not in set(searched_sessions)]
@@ -157,6 +198,7 @@ def retrieve_memory(
             "selected_claim_ids": selected_claim_ids,
             "selected_turn_ids": rendered_turn_ids,
             "temporal_targets": [target.isoformat() for target in temporal_targets],
+            "graph_query": _graph_query_metadata(graph_result),
         },
     )
     confidence = _build_confidence(
@@ -188,6 +230,7 @@ def retrieve_memory(
         metadata={
             "searched_sessions": searched_sessions,
             "n_direct_turns": len(selected_direct_turn_ids),
+            "graph_query": _graph_query_metadata(graph_result),
         },
     )
     return MemoryRetrievalResult(
@@ -209,7 +252,12 @@ def retrieve_memory(
             "token_budget": token_budget,
             "estimated_context_tokens": token_counter(context_text),
             "temporal_targets": [target.isoformat() for target in temporal_targets],
-            "selected_unit_ids": [*rendered_turn_ids, *selected_claim_ids],
+            "selected_unit_ids": [
+                *rendered_turn_ids,
+                *selected_claim_ids,
+                *(graph_result.selected_event_ids if graph_result else []),
+            ],
+            "graph_query": _graph_query_metadata(graph_result),
             "claim_scores": {cid: round(scored_claims.get(cid, 0.0), 4) for cid in selected_claim_ids},
             "turn_scores": {tid: round(scored_turns.get(tid, 0.0), 4) for tid in rendered_turn_ids},
         },
@@ -296,6 +344,7 @@ def _render_context(
     selected_claim_ids: list[str],
     selected_turn_ids: list[str],
     selected_direct_turn_ids: set[str],
+    prefix_text: str = "",
 ) -> str:
     claims_for_turn: dict[str, list[MemoryClaimRecord]] = {}
     standalone_claims: list[MemoryClaimRecord] = []
@@ -321,7 +370,24 @@ def _render_context(
     for record in standalone_claims:
         entries.append((record.sort_key, _claim_header(record)))
     entries.sort(key=lambda item: item[0])
-    return "\n\n".join(block for _, block in entries)
+    blocks = [block for _, block in entries]
+    if prefix_text:
+        blocks.insert(0, prefix_text)
+    return "\n\n".join(blocks)
+
+
+def _graph_query_metadata(graph_result: Any | None) -> dict[str, Any] | None:
+    if graph_result is None:
+        return None
+    return {
+        "operation": graph_result.operation,
+        "answer_hint": graph_result.answer_hint,
+        "selected_event_ids": graph_result.selected_event_ids,
+        "selected_claim_ids": graph_result.selected_claim_ids,
+        "selected_turn_ids": graph_result.selected_turn_ids,
+        "evidence_rows": graph_result.evidence_rows,
+        **graph_result.metadata,
+    }
 
 
 def _claim_header(record: MemoryClaimRecord) -> str:

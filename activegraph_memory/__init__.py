@@ -9,11 +9,15 @@ from activegraph.packs import Pack, load_prompts_from_dir
 from .behaviors import BEHAVIORS
 from .constants import PACK_NAME, PACK_VERSION
 from .compiler import (
+    CategoryRef,
+    EntityRef,
     ExtractedClaimInput,
+    MemoryEventRecord,
     MemoryIndex,
     SourceTurn,
     compile_memory_index,
 )
+from .graph_query import GraphQueryResult, run_graph_query
 from .object_types import OBJECT_TYPES, RELATION_TYPES
 from .retrieval import MemoryRetrievalResult, retrieve_memory
 from .settings import ActiveGraphMemorySettings
@@ -42,10 +46,15 @@ pack = Pack(
 __all__ = [
     "pack",
     "ActiveGraphMemorySettings",
+    "CategoryRef",
+    "EntityRef",
     "ExtractedClaimInput",
+    "GraphQueryResult",
+    "MemoryEventRecord",
     "MemoryIndex",
     "MemoryRetrievalResult",
     "SourceTurn",
     "compile_memory_index",
     "retrieve_memory",
+    "run_graph_query",
 ]

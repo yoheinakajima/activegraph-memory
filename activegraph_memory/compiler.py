@@ -15,6 +15,7 @@ from typing import Any, Iterable
 
 from .constants import AuthorityLevel, ClaimKind
 from .object_types import MemoryClaim, QuantityClaim, TemporalRef
+from .taxonomy import category_label, infer_category_ids, infer_predicate
 from .temporal import extract_temporal_refs
 
 
@@ -125,6 +126,46 @@ class MemoryClaimRecord:
         return self.claim.text
 
 
+@dataclass(frozen=True)
+class EntityRef:
+    """A normalized entity-like reference compiled from memory claims."""
+
+    entity_id: str
+    label: str
+    kind: str = "unknown"
+    aliases: tuple[str, ...] = ()
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class CategoryRef:
+    """A coarse deterministic category used for graph query filtering."""
+
+    category_id: str
+    label: str
+    confidence: float = 0.7
+
+
+@dataclass(frozen=True)
+class MemoryEventRecord:
+    """A compact event row compiled from claims for reducers and timelines."""
+
+    event_id: str
+    text: str
+    predicate: str
+    entity_refs: tuple[str, ...] = ()
+    category_ids: tuple[str, ...] = ()
+    quantity_claims: tuple[QuantityClaim, ...] = ()
+    temporal_refs: tuple[TemporalRef, ...] = ()
+    event_start: str | None = None
+    event_end: str | None = None
+    observed_at: str | None = None
+    source_claim_id: str | None = None
+    source_turn_ids: tuple[str, ...] = ()
+    sort_key: tuple[str, int, int] = ("", 0, 0)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
 @dataclass
 class MemoryIndex:
     """Compiled memory graph projection used by the retriever."""
@@ -134,6 +175,11 @@ class MemoryIndex:
     by_turn_id: dict[str, SourceTurn]
     by_claim_id: dict[str, MemoryClaimRecord]
     metadata: dict[str, Any] = field(default_factory=dict)
+    entities: list[EntityRef] = field(default_factory=list)
+    categories: list[CategoryRef] = field(default_factory=list)
+    events: list[MemoryEventRecord] = field(default_factory=list)
+    by_entity_id: dict[str, EntityRef] = field(default_factory=dict)
+    by_event_id: dict[str, MemoryEventRecord] = field(default_factory=dict)
 
     @property
     def session_ids(self) -> list[str]:
@@ -239,13 +285,164 @@ def compile_memory_index(
 
     _mark_supersession(records)
     by_claim_id = {record.claim_id: record for record in records}
+    entities, categories, events = _compile_event_projection(records)
     return MemoryIndex(
         turns=turn_list,
         claims=records,
         by_turn_id=by_turn_id,
         by_claim_id=by_claim_id,
         metadata=metadata or {},
+        entities=entities,
+        categories=categories,
+        events=events,
+        by_entity_id={entity.entity_id: entity for entity in entities},
+        by_event_id={event.event_id: event for event in events},
     )
+
+
+def _compile_event_projection(
+    records: Iterable[MemoryClaimRecord],
+) -> tuple[list[EntityRef], list[CategoryRef], list[MemoryEventRecord]]:
+    """Compile claims into coarse entity/category/event rows."""
+
+    entities_by_id: dict[str, EntityRef] = {}
+    category_ids: set[str] = set()
+    events: list[MemoryEventRecord] = []
+    seen_events: set[str] = set()
+
+    for record in records:
+        label = _entity_label(record)
+        entity_id = stable_entity_id(label)
+        if entity_id not in entities_by_id:
+            entities_by_id[entity_id] = EntityRef(
+                entity_id=entity_id,
+                label=label,
+                kind=_entity_kind(record.text),
+                aliases=tuple(_entity_aliases(label, record.topic_key)),
+                metadata={"source_claim_ids": [record.claim_id]},
+            )
+        else:
+            entity = entities_by_id[entity_id]
+            source_claim_ids = list(entity.metadata.get("source_claim_ids", []))
+            if record.claim_id not in source_claim_ids:
+                source_claim_ids.append(record.claim_id)
+            entities_by_id[entity_id] = EntityRef(
+                entity_id=entity.entity_id,
+                label=entity.label,
+                kind=entity.kind,
+                aliases=entity.aliases,
+                metadata={**entity.metadata, "source_claim_ids": source_claim_ids},
+            )
+
+        categories = infer_category_ids(record.text)
+        category_ids.update(categories)
+        event_start, event_end = _event_dates(record)
+        predicate = infer_predicate(record.text)
+        dedupe_key = _event_dedupe_key(
+            entity_id=entity_id,
+            predicate=predicate,
+            event_start=event_start,
+            text=record.text,
+        )
+        if dedupe_key in seen_events:
+            continue
+        seen_events.add(dedupe_key)
+        event_id = stable_event_id(dedupe_key)
+        events.append(
+            MemoryEventRecord(
+                event_id=event_id,
+                text=record.text,
+                predicate=predicate,
+                entity_refs=(entity_id,),
+                category_ids=categories,
+                quantity_claims=tuple(record.quantity_claims),
+                temporal_refs=tuple(record.temporal_refs),
+                event_start=event_start,
+                event_end=event_end,
+                observed_at=record.claim.observed_at,
+                source_claim_id=record.claim_id,
+                source_turn_ids=tuple(record.source_turn_ids),
+                sort_key=record.sort_key,
+                metadata={
+                    "dedupe_key": dedupe_key,
+                    "topic_key": record.topic_key,
+                    "claim_status": record.claim.status,
+                },
+            )
+        )
+
+    categories = [
+        CategoryRef(category_id=category_id, label=category_label(category_id))
+        for category_id in sorted(category_ids)
+    ]
+    entities = sorted(entities_by_id.values(), key=lambda entity: entity.label)
+    events.sort(key=lambda event: event.sort_key)
+    return entities, categories, events
+
+
+def stable_entity_id(label: str) -> str:
+    """Stable id for a normalized entity label."""
+
+    digest = hashlib.sha256(label.lower().encode("utf-8")).hexdigest()
+    return f"entity:{digest[:16]}"
+
+
+def stable_event_id(dedupe_key: str) -> str:
+    """Stable id for a compiled memory event."""
+
+    digest = hashlib.sha256(dedupe_key.encode("utf-8")).hexdigest()
+    return f"event:{digest[:16]}"
+
+
+def _entity_label(record: MemoryClaimRecord) -> str:
+    topic = " ".join(record.topic_key.split()[:6])
+    if topic:
+        return topic
+    cleaned = re.sub(r"\s+", " ", record.text.strip())
+    return cleaned[:80] or record.claim_id
+
+
+def _entity_kind(text: str) -> str:
+    categories = set(infer_category_ids(text))
+    if "plant" in categories:
+        return "plant"
+    if "project" in categories:
+        return "project"
+    if "travel" in categories:
+        return "place_or_trip"
+    if "event" in categories:
+        return "event"
+    if "expense" in categories:
+        return "expense"
+    return "unknown"
+
+
+def _entity_aliases(label: str, topic: str) -> list[str]:
+    aliases = [label]
+    if topic and topic != label:
+        aliases.append(topic)
+    return aliases
+
+
+def _event_dates(record: MemoryClaimRecord) -> tuple[str | None, str | None]:
+    for ref in record.temporal_refs:
+        if ref.resolved_start or ref.resolved_end:
+            return (
+                ref.resolved_start or ref.resolved_end,
+                ref.resolved_end or ref.resolved_start,
+            )
+    return record.claim.valid_from, record.claim.valid_until or record.claim.valid_from
+
+
+def _event_dedupe_key(
+    *,
+    entity_id: str,
+    predicate: str,
+    event_start: str | None,
+    text: str,
+) -> str:
+    normalized_text = " ".join(_TOKEN_RE.findall(text.lower()))[:160]
+    return "|".join((entity_id, predicate, event_start or "", normalized_text))
 
 
 def infer_claim_kind(text: str, *, role: str = "unknown") -> ClaimKind:
@@ -400,4 +597,3 @@ def _normalize_topic_token(token: str) -> str:
         if len(token) > len(ending) + 3 and token.endswith(ending):
             return token[: -len(ending)]
     return token
-
