@@ -18,7 +18,7 @@ This package owns the higher-level memory layer:
 - confidence vectors
 - evidence-backed memory answers
 
-The first release is intentionally deterministic. It defines the object model, relation model, planner utilities, coverage/confidence helpers, and a graph-visible query-planning behavior. It does not perform LLM-backed extraction and does not replace mem0, Zep, pgvector, SQLite, or the existing memory backend seam.
+The first release is intentionally deterministic. It defines the object model, relation model, planner utilities, compiler/retriever runtime, coverage/confidence helpers, and a graph-visible query-planning behavior. It does not own connector-specific extraction and does not replace mem0, Zep, pgvector, SQLite, or the existing memory backend seam.
 
 ## Install
 
@@ -90,13 +90,59 @@ assert "supersession_scan" in plan.strategies
 
 The pack also registers a `memory_query_planner` behavior. When loaded in an ActiveGraph runtime, creating a `memory_query` can create a graph-visible `retrieval_plan`.
 
+## Compile From The Log
+
+The standalone compiler/retriever path accepts source turns plus extracted
+claim inputs from any upstream extractor or connector:
+
+```python
+from activegraph_memory import ExtractedClaimInput, SourceTurn
+from activegraph_memory import compile_memory_index, retrieve_memory
+
+turn = SourceTurn(
+    turn_id="session-1#0",
+    session_id="session-1",
+    session_date="2023-05-27",
+    session_idx=0,
+    turn_idx=0,
+    role="user",
+    content="I have been taking Spanish classes for the past three months.",
+    text="[Session session-1 (2023-05-27)] user: I have been taking Spanish classes for the past three months.",
+)
+claim = ExtractedClaimInput(
+    text="The user has been taking Spanish classes for the past three months.",
+    session_id="session-1",
+    session_date="2023-05-27",
+    session_idx=0,
+    role="user",
+    mentioned_turn_idxs=(0,),
+)
+index = compile_memory_index(turns=[turn], claims=[claim])
+result = retrieve_memory(
+    index,
+    "Which happened first, Spanish classes or the festival?",
+    question_date="2023/05/27 (Sat)",
+)
+```
+
+The retriever returns context text plus structured artifacts:
+
+- `RetrievalPlan`
+- `EvidenceBundle`
+- `CoverageReport`
+- confidence vector
+- selected claim and source-turn ids
+
+Claim headers are rendered above source turns, so semantic memory acts as an
+index into the event log rather than a replacement for the log.
+
 ## Behavior Map
 
 | Behavior | Trigger | Output | Notes |
 | --- | --- | --- | --- |
 | `memory_query_planner` | `memory_query.created` | `retrieval_plan` | Deterministic, offline, no API key. |
 
-Future behavior layers should add claim extraction, temporal resolution, gateway integration, coverage checks, and answer synthesis as graph-visible steps.
+Future behavior layers should add connector-specific extraction, full graph-visible evidence retrieval, conflict/supersession writes, and answer synthesis as graph-visible steps.
 
 ## Gateway Boundary
 

@@ -32,7 +32,9 @@ Status: helper functions exist; runtime behavior still needs full integration te
 - Confidence vector calculation
 - Answer status selection
 
-Status: helper functions exist; graph behavior pending.
+Status: implemented as pure helper/runtime code. `retrieve_memory` returns
+`EvidenceBundle`, `CoverageReport`, confidence, epistemic status, and selected
+evidence ids. Graph behavior is still pending.
 
 ## Phase 5 - Temporal, Conflict, Supersession
 
@@ -41,7 +43,11 @@ Status: helper functions exist; graph behavior pending.
 - Claim status updates
 - Evidence-aware answer synthesis
 
-Status: only a small deterministic duration helper exists.
+Status: partially implemented. The compiler records claim temporal refs,
+simple quantities, rough authority, lifecycle status, and lightweight
+supersession metadata. The retriever renders normalized simple relative dates
+and durations into claim headers. Full conflict detection and graph mutation
+behaviors are still pending.
 
 ## Phase 6 - Benchmarks And Evals
 
@@ -50,4 +56,18 @@ Status: only a small deterministic duration helper exists.
 - Coverage calibration tests
 - Regression suite for latest/current/final and negative questions
 
-Status: planned.
+Status: initial LongMemEval integration complete via
+`yoheinakajima/activegraph-longmemeval`.
+
+Smoke result on LongMemEval-S, 50 frozen IDs:
+
+```text
+activegraph-memory-pack
+run: agmem-fullarch2-smoke-20260709T014835Z__activegraph-memory-pack__s__smoke
+overall accuracy:       0.94
+task-averaged accuracy: 0.9634
+abstention accuracy:    1.0
+```
+
+Full-500 validation should wait for persistent embedding caching because the
+compiled-memory adapter currently replays claim/turn embedding work slowly.

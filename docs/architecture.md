@@ -50,7 +50,12 @@ Version 0.1 is deterministic:
 - ActiveGraph object and relation types
 - deterministic query classification
 - retrieval plan generation
+- source-turn and extracted-claim compiler
+- evidence-bundle retrieval/assembly runtime
 - coverage and confidence helpers
 - one graph-visible planning behavior
 
-It intentionally does not include LLM-backed extraction, automatic conflict detection, or external connector logic yet.
+It intentionally does not own connector-specific extraction, automatic
+conflict graph mutation, or external connector logic yet. The runtime accepts
+claims produced by upstream extractors and compiles them into a source-grounded
+memory index.

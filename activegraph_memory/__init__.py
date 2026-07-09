@@ -8,7 +8,14 @@ from activegraph.packs import Pack, load_prompts_from_dir
 
 from .behaviors import BEHAVIORS
 from .constants import PACK_NAME, PACK_VERSION
+from .compiler import (
+    ExtractedClaimInput,
+    MemoryIndex,
+    SourceTurn,
+    compile_memory_index,
+)
 from .object_types import OBJECT_TYPES, RELATION_TYPES
+from .retrieval import MemoryRetrievalResult, retrieve_memory
 from .settings import ActiveGraphMemorySettings
 from .tools import TOOLS
 
@@ -32,4 +39,13 @@ pack = Pack(
     settings_schema=ActiveGraphMemorySettings,
 )
 
-__all__ = ["pack", "ActiveGraphMemorySettings"]
+__all__ = [
+    "pack",
+    "ActiveGraphMemorySettings",
+    "ExtractedClaimInput",
+    "MemoryIndex",
+    "MemoryRetrievalResult",
+    "SourceTurn",
+    "compile_memory_index",
+    "retrieve_memory",
+]
