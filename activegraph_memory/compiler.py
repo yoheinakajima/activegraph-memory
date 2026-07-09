@@ -22,6 +22,7 @@ from .temporal import extract_temporal_refs
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
 _QUANTITY_RE = re.compile(
     r"(?P<prefix>\$)?(?P<value>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
+    r"(?P<suffix>[kKmM])?"
     r"\s*(?P<unit>%|percent|dollars?|usd|"
     r"pages?|days?|weeks?|months?|years?|hours?|minutes?|ounces?|oz|cups?|"
     r"plants?|stories?|babies?|weddings?|museums?|doctors?)?",
@@ -34,6 +35,98 @@ _WORD_QUANTITY_RE = re.compile(
     r"ounces?|oz|cups?|plants?|stories?|babies?|weddings?|museums?|doctors?)\b",
     re.IGNORECASE,
 )
+_WORD_NUMBER_RE = re.compile(
+    r"\b(?P<value>one|two|three|four|five|six|seven|eight|nine|ten|eleven|"
+    r"twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|"
+    r"twenty)\b",
+    re.IGNORECASE,
+)
+_FOLLOWING_UNIT_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z&'.-]*")
+_GENERIC_UNIT_STOPWORDS = {
+    "a",
+    "about",
+    "after",
+    "ago",
+    "all",
+    "already",
+    "and",
+    "around",
+    "as",
+    "at",
+    "before",
+    "but",
+    "by",
+    "currently",
+    "during",
+    "each",
+    "earlier",
+    "far",
+    "for",
+    "from",
+    "had",
+    "has",
+    "have",
+    "in",
+    "is",
+    "just",
+    "last",
+    "now",
+    "of",
+    "on",
+    "or",
+    "over",
+    "so",
+    "that",
+    "the",
+    "this",
+    "through",
+    "to",
+    "today",
+    "total",
+    "up",
+    "was",
+    "were",
+    "when",
+    "which",
+    "who",
+    "with",
+    "yet",
+}
+_GENERIC_UNIT_LEADING_WORDS = {
+    "a",
+    "an",
+    "another",
+    "big",
+    "current",
+    "different",
+    "emma's",
+    "extra",
+    "first",
+    "h",
+    "korean",
+    "last",
+    "m",
+    "my",
+    "national",
+    "new",
+    "old",
+    "our",
+    "recent",
+    "same",
+    "small",
+    "the",
+    "their",
+    "these",
+    "those",
+}
+_GENERIC_UNIT_BLOCKLIST = {
+    "am",
+    "pm",
+    "st",
+    "nd",
+    "rd",
+    "th",
+}
 
 _STOPWORDS = {
     "a",
@@ -398,6 +491,7 @@ def _compile_event_projection(
                     "topic_key": record.topic_key,
                     "claim_status": record.claim.status,
                     "polarity": infer_polarity(record.text),
+                    "role": record.claim.metadata.get("role"),
                 },
             )
         )
@@ -526,8 +620,19 @@ def extract_quantity_claims(text: str) -> list[QuantityClaim]:
     for match in _QUANTITY_RE.finditer(text):
         raw_unit = match.group("unit")
         prefix = match.group("prefix")
+        suffix = (match.group("suffix") or "").lower()
         unit = "usd" if prefix == "$" else (raw_unit.lower() if raw_unit else None)
         value = float(match.group("value").replace(",", ""))
+        if suffix == "k":
+            value *= 1000
+            if prefix == "$":
+                unit = "usd"
+        elif suffix == "m":
+            value *= 1000000
+            if prefix == "$":
+                unit = "usd"
+        if unit is None and suffix == "":
+            unit = _infer_following_count_unit(text, match.end())
         key = (value, unit)
         if key in seen:
             continue
@@ -538,7 +643,7 @@ def extract_quantity_claims(text: str) -> list[QuantityClaim]:
                 value=value,
                 unit=unit,
                 exactness="exact",
-                source_text=match.group(0),
+                source_text=match.group(0).strip() if raw_unit or prefix or suffix else f"{match.group(0).strip()} {unit}".strip(),
                 confidence=0.8,
             )
         )
@@ -561,7 +666,64 @@ def extract_quantity_claims(text: str) -> list[QuantityClaim]:
                 confidence=0.78,
             )
         )
+    for match in _WORD_NUMBER_RE.finditer(text):
+        raw_value = match.group("value").lower()
+        value = float(_WORD_NUMBERS[raw_value])
+        unit = _infer_following_count_unit(text, match.end())
+        if not unit:
+            continue
+        key = (value, unit)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(
+            QuantityClaim(
+                property_name="quantity",
+                value=value,
+                unit=unit,
+                exactness="exact",
+                source_text=f"{match.group(0)} {unit}",
+                confidence=0.72,
+            )
+        )
     return out
+
+
+def _infer_following_count_unit(text: str, start: int) -> str | None:
+    """Infer the counted noun after a number without relying on a closed unit list."""
+
+    tail = text[start : start + 96]
+    if not tail or re.match(r"\s*[/:-]", tail):
+        return None
+    if re.match(r"\s*(?:am|pm)\b", tail, re.IGNORECASE):
+        return None
+
+    tokens: list[str] = []
+    for match in _FOLLOWING_UNIT_TOKEN_RE.finditer(tail):
+        raw = match.group(0).strip(" .'\"").lower()
+        if not raw:
+            continue
+        if match.start() > 0 and re.search(r"[.;!?]", tail[: match.start()]):
+            break
+        if raw in _GENERIC_UNIT_STOPWORDS:
+            if tokens:
+                break
+            continue
+        if raw.endswith("'s"):
+            continue
+        tokens.append(raw)
+        if len(tokens) >= 5:
+            break
+
+    while tokens and tokens[0] in _GENERIC_UNIT_LEADING_WORDS:
+        tokens.pop(0)
+    if not tokens:
+        return None
+
+    unit = tokens[-1]
+    if unit in _GENERIC_UNIT_BLOCKLIST or len(unit) < 2:
+        return None
+    return unit
 
 
 def topic_key(text: str) -> str:

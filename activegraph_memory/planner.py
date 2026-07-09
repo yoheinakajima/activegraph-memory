@@ -44,6 +44,12 @@ _AGGREGATE_PATTERNS = (
     r"\blist all\b",
     r"\ball of\b",
 )
+_TEMPORAL_QUANTITY_PATTERNS = (
+    r"\bhow many\s+(?:days?|weeks?|months?|years?)\s+ago\b",
+    r"\bhow many\s+(?:days?|weeks?|months?|years?)\s+(?:had\s+)?passed\b",
+    r"\bhow many\s+(?:days?|weeks?|months?|years?)\s+did it take\b",
+    r"\bhow long\b.*\b(?:ago|since|after|before)\b",
+)
 _TEMPORAL_PATTERNS = (
     r"\bas of\b",
     r"\bbefore\b",
@@ -252,6 +258,8 @@ def infer_query_type(query: str) -> QueryType:
         return "unknown"
     if _matches_any(text, _NEGATIVE_PATTERNS):
         return "negative_existence"
+    if _matches_any(text, _TEMPORAL_QUANTITY_PATTERNS):
+        return "temporal"
     if _matches_any(text, _AGGREGATE_PATTERNS):
         return "aggregate"
     if _matches_any(text, _LATEST_PATTERNS):

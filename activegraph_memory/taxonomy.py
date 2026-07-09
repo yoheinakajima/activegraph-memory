@@ -15,11 +15,51 @@ _NEGATED_EVENT_RE = re.compile(
 )
 
 _CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "art": ("art", "gallery", "painting", "museum", "exhibit", "mural", "studio"),
+    "art": ("art", "artwork", "gallery", "painting", "museum", "exhibit", "mural", "studio"),
     "bike": ("bike", "bicycle", "cycling", "helmet", "pedal", "chain", "brake", "tire", "lights"),
     "book": ("book", "novel", "paperback", "chapter", "library", "read"),
-    "charity": ("charity", "donation", "donated", "fundraiser", "raised"),
-    "clothing": ("clothing", "shirt", "jacket", "blazer", "boots", "dress", "coat", "zara"),
+    "charity": (
+        "charity",
+        "donation",
+        "donated",
+        "fundraiser",
+        "fundraising",
+        "sponsor",
+        "sponsored",
+        "pledge",
+        "pledged",
+        "benefit",
+        "nonprofit",
+        "animal shelter",
+        "cancer research",
+    ),
+    "clothing": (
+        "clothing",
+        "shirt",
+        "top",
+        "tops",
+        "jacket",
+        "blazer",
+        "boots",
+        "dress",
+        "coat",
+        "gown",
+        "heels",
+        "shoes",
+        "handbag",
+        "bag",
+        "designer",
+        "fashion",
+        "gucci",
+        "high-end",
+        "jimmy choo",
+        "luxury",
+        "tk maxx",
+        "outlet",
+        "zara",
+        "h&m",
+        "hm",
+    ),
     "event": ("event", "festival", "concert", "wedding", "workshop", "conference", "class"),
     "expense": (
         "$",
@@ -33,10 +73,68 @@ _CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
         "purchased",
         "ordered",
     ),
-    "family": ("family", "mom", "mother", "dad", "father", "sister", "brother", "baby", "wedding"),
+    "family": (
+        "family",
+        "mom",
+        "mother",
+        "dad",
+        "father",
+        "sister",
+        "brother",
+        "aunt",
+        "cousin",
+        "friend",
+        "friends",
+        "son",
+        "daughter",
+        "child",
+        "children",
+        "baby",
+        "babies",
+        "twin",
+        "twins",
+        "wedding",
+    ),
     "food": ("food", "coffee", "tea", "cocktail", "dinner", "lunch", "restaurant", "citrus"),
+    "gaming": (
+        "game",
+        "games",
+        "gaming",
+        "video game",
+        "assassin's creed",
+        "odyssey",
+        "witcher",
+        "dragon age",
+        "hyper light drifter",
+        "celeste",
+        "last of us",
+        "god of war",
+        "horizon zero dawn",
+        "red dead redemption",
+        "ori and the blind forest",
+        "gris",
+        "spelunky",
+        "cuphead",
+        "switch",
+        "ps5",
+        "xbox",
+    ),
+    "grocery": (
+        "grocery",
+        "groceries",
+        "supermarket",
+        "publix",
+        "walmart",
+        "instacart",
+        "trader joe",
+        "trader joe's",
+        "thrive market",
+        "whole foods",
+        "costco",
+        "aldi",
+    ),
     "health": ("doctor", "dentist", "medication", "therapy", "health", "appointment"),
-    "home": ("home", "apartment", "kitchen", "room", "furniture", "smoker", "sofa"),
+    "home": ("home", "apartment", "kitchen", "room", "furniture", "appliance", "smoker", "sofa"),
     "music": ("music", "album", "song", "concert", "playlist", "guitar", "piano"),
     "plant": (
         "plant",
@@ -52,10 +150,23 @@ _CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
     ),
     "project": ("project", "repo", "repository", "launch", "prototype", "roadmap", "milestone"),
     "travel": ("travel", "trip", "flight", "hotel", "airbnb", "museum", "train", "airport"),
-    "vehicle": ("car", "bike", "bicycle", "scooter", "vehicle", "tire"),
+    "vehicle": (
+        "car",
+        "bike",
+        "bicycle",
+        "scooter",
+        "vehicle",
+        "tire",
+        "truck",
+        "pickup",
+        "ford",
+        "mustang",
+        "f-150",
+    ),
 }
 
 _PREDICATE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("birth", ("born", "birth", "gave birth", "welcomed")),
     ("cancel", ("cancel", "cancelled", "canceled", "dropped", "skipped")),
     ("repair", ("repair", "repaired", "fixed", "serviced", "replaced", "maintenance")),
     ("purchase", ("buy", "bought", "purchase", "purchased", "ordered", "paid", "spend", "spent", "cost")),
@@ -66,7 +177,7 @@ _PREDICATE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("decide", ("decide", "decided", "agreed", "approved", "chose", "selected")),
     ("prefer", ("prefer", "prefers", "favorite", "likes")),
     ("schedule", ("schedule", "scheduled", "booked", "planned", "appointment")),
-    ("donate", ("donate", "donated", "gave", "raised", "fundraiser")),
+    ("donate", ("donate", "donated", "gave", "raise", "raised", "fundraiser", "sponsor", "sponsored", "pledge", "pledged")),
 )
 
 _PREDICATE_GROUPS: tuple[set[str], ...] = (
@@ -81,9 +192,17 @@ def normalize_token(token: str) -> str:
     """Normalize a token for rough lexical matching."""
 
     token = token.lower()
-    for ending in ("ing", "ed", "es", "s"):
+    if token in {"raise", "raises", "raised", "raising"}:
+        return "raise"
+    if token in {"organize", "organizes", "organized", "organizing"}:
+        return "organize"
+    if token in {"wedding", "weddings"}:
+        return "wedding"
+    for ending in ("ing", "ed", "es"):
         if len(token) > len(ending) + 3 and token.endswith(ending):
             return token[: -len(ending)]
+    if len(token) > 4 and token.endswith("s") and not token.endswith("ss"):
+        return token[:-1]
     return token
 
 
@@ -108,6 +227,8 @@ def infer_category_ids(text: str) -> tuple[str, ...]:
             if _contains_keyword(lower, tokens, keyword):
                 out.append(category_id)
                 break
+    if "charity" not in out and _looks_like_fundraising(lower):
+        out.append("charity")
     return tuple(out)
 
 
@@ -122,7 +243,15 @@ def infer_predicate(text: str) -> str:
 
     lower = f" {text.lower()} "
     tokens = significant_tokens(text)
+    if re.search(r"\b(?:got|came|went|returned)\s+back\s+from\b", lower):
+        return "visit"
+    if _looks_like_birth_event(lower):
+        return "birth"
     for predicate, patterns in _PREDICATE_PATTERNS:
+        if predicate == "birth" and re.search(r"\bborn\s+and\s+raised\b", lower):
+            continue
+        if predicate == "donate" and re.search(r"\bborn\s+and\s+raised\b", lower):
+            continue
         if any(_contains_keyword(lower, tokens, pattern) for pattern in patterns):
             return predicate
     return "state"
@@ -156,3 +285,26 @@ def _contains_keyword(lower_text: str, tokens: set[str], keyword: str) -> bool:
     if not keyword.isalnum():
         return keyword in lower_text
     return normalize_token(keyword) in tokens
+
+
+def _looks_like_fundraising(lower_text: str) -> bool:
+    return bool(
+        re.search(r"\brais(?:e|ed|ing)\b[^.]{0,80}\b(?:money|funds?|donations?|sponsors?)\b", lower_text)
+        or re.search(r"\brais(?:e|ed|ing)\b[^.]{0,80}\$", lower_text)
+        or re.search(
+            r"\brais(?:e|ed|ing)\b[^.]{0,80}\b(?:cancer|hospital|shelter|research|nonprofit|foundation|school)\b",
+            lower_text,
+        )
+    )
+
+
+def _looks_like_birth_event(lower_text: str) -> bool:
+    if re.search(r"\bborn\s+and\s+raised\b", lower_text):
+        return False
+    return bool(
+        re.search(r"\b(?:was|were)\s+born\b", lower_text)
+        or re.search(r"\bgave\s+birth\b", lower_text)
+        or re.search(r"\bwelcomed\b[^.]{0,80}\b(?:baby|child|son|daughter|twins?)\b", lower_text)
+        or re.search(r"\bhad\b[^.]{0,60}\b(?:baby|child|son|daughter|twins?)\b", lower_text)
+        or re.search(r"\bnew\s+twin\s+girls?\b", lower_text)
+    )

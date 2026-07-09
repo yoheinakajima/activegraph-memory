@@ -20,6 +20,101 @@ from .temporal import extract_temporal_refs
 TokenCounter = Callable[[str], int]
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
+_LARGE_REQUESTED_BUDGET = 6000
+_ADAPTIVE_BUDGETS: dict[str, int] = {
+    "aggregate": 3200,
+    "multi_hop": 3400,
+    "temporal": 3200,
+    "current": 2400,
+    "latest": 2400,
+    "final": 2400,
+    "preference": 2200,
+    "lookup": 2400,
+    "semantic_lookup": 2600,
+    "decision_reconstruction": 3200,
+    "negative_existence": 2600,
+    "unknown": 2600,
+}
+_QUERY_STOPWORDS = {
+    "about",
+    "after",
+    "again",
+    "all",
+    "also",
+    "amount",
+    "and",
+    "any",
+    "are",
+    "before",
+    "can",
+    "currently",
+    "did",
+    "does",
+    "for",
+    "from",
+    "had",
+    "has",
+    "have",
+    "how",
+    "including",
+    "into",
+    "many",
+    "much",
+    "need",
+    "our",
+    "previous",
+    "recent",
+    "remind",
+    "since",
+    "that",
+    "the",
+    "this",
+    "term",
+    "terms",
+    "total",
+    "was",
+    "were",
+    "what",
+    "when",
+    "where",
+    "which",
+    "with",
+    "you",
+}
+_VALUATION_RATIO_TERMS = {
+    "double",
+    "doubled",
+    "twice",
+    "triple",
+    "tripled",
+    "half",
+    "third",
+    "quarter",
+    "multiple",
+    "times",
+}
+_GRAPH_ANSWER_CONFIDENCE_FLOOR = 0.65
+_SNAPSHOT_COUNT_INTENT_RE = re.compile(
+    r"\b(so far|as of now|currently|current|latest|now|already|yet)\b|"
+    r"\b(?:how many|number of|count)\b.*\b(?:have i|have we|i've|we've|do i have|do we have)\b",
+    re.IGNORECASE,
+)
+_COUNT_ADDITIVE_INTENT_RE = re.compile(
+    r"\b(in total|total number|overall|all together|altogether|during|between|from .+ to|"
+    r"this year|this month|this week|last year|last month|past year|past month|past few|"
+    r"each|per)\b",
+    re.IGNORECASE,
+)
+_STRONG_SNAPSHOT_COUNT_INTENT_RE = re.compile(
+    r"\b(so far|as of now|currently|current|latest|now|already|yet)\b",
+    re.IGNORECASE,
+)
+_SNAPSHOT_VALUE_INTENT_RE = re.compile(
+    r"\b(current|currently|latest|now|as of now|balance|limit|pre-?approved|approved for|"
+    r"worth|valued|value|estimate|offer|salary|budget|rate)\b|"
+    r"\bhow much\s+(?:is|was|are|were|am)\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -97,32 +192,50 @@ def retrieve_memory(
         query_type=query_type,
         anchor_time=memory_query.time_anchor,
     )
+    effective_token_budget = _effective_token_budget(token_budget, query_type=query_type, graph_result=graph_result)
     selected_claim_ids: list[str] = []
     selected_turn_ids: set[str] = set()
     selected_direct_turn_ids: set[str] = set()
     selected_claim_set: set[str] = set()
     graph_context = ""
+    graph_context_rendered = False
+    graph_context_ok, graph_context_reason = _graph_answer_packet_status(
+        graph_result,
+        query=memory_query.query,
+        query_type=query_type,
+    )
+    dynamic_expansion = _dynamic_expansion_plan(
+        graph_result,
+        graph_context_ok=graph_context_ok,
+        graph_context_reason=graph_context_reason,
+        query=memory_query.query,
+        query_type=query_type,
+    )
+    dynamic_added_claim_ids: list[str] = []
+    dynamic_added_turn_ids: list[str] = []
     running = 0
     truncated = False
 
     def fits(cost: int) -> bool:
-        return running + cost <= token_budget
+        return running + cost <= effective_token_budget
 
     def add_cost(cost: int) -> None:
         nonlocal running
         running += cost
 
-    def add_claim(record: MemoryClaimRecord) -> bool:
+    def add_claim(record: MemoryClaimRecord, *, include_sources: bool = True) -> bool:
         nonlocal truncated
         if record.claim_id in selected_claim_set:
             return True
         header = _claim_header(record)
         cost = token_counter(header) + 1
-        new_turn_ids = [
-            turn_id
-            for turn_id in record.source_turn_ids
-            if turn_id in index.by_turn_id and turn_id not in selected_turn_ids
-        ]
+        new_turn_ids = []
+        if include_sources:
+            new_turn_ids = [
+                turn_id
+                for turn_id in record.source_turn_ids
+                if turn_id in index.by_turn_id and turn_id not in selected_turn_ids
+            ]
         for turn_id in new_turn_ids:
             cost += token_counter(index.by_turn_id[turn_id].text) + 1
         if not fits(cost):
@@ -150,12 +263,19 @@ def retrieve_memory(
             selected_direct_turn_ids.add(turn.turn_id)
         return True
 
-    if graph_result is not None and graph_result.answer_hint:
-        for max_rows in (24, 12, 6, 0):
-            rendered_graph = graph_result.render(max_rows=max_rows)
+    if graph_result is not None and graph_result.answer_hint and graph_context_ok:
+        for max_rows in _packet_row_options(graph_result):
+            rendered_graph = _render_answer_packet(
+                index,
+                graph_result,
+                query=memory_query.query,
+                query_type=query_type,
+                max_rows=max_rows,
+            )
             graph_cost = token_counter(rendered_graph) + 2
             if fits(graph_cost):
                 graph_context = rendered_graph
+                graph_context_rendered = True
                 add_cost(graph_cost)
                 break
         else:
@@ -163,27 +283,49 @@ def retrieve_memory(
             graph_cost = token_counter(minimal_graph) + 2
             if fits(graph_cost):
                 graph_context = minimal_graph
+                graph_context_rendered = True
                 add_cost(graph_cost)
             else:
                 truncated = True
-        for claim_id in graph_result.selected_claim_ids:
+        graph_claim_ids = _graph_claim_ids_to_expand(graph_result)
+        graph_turn_ids = _graph_turn_ids_to_expand(graph_result)
+        for claim_id in graph_claim_ids:
             record = index.by_claim_id.get(claim_id)
             if record is not None:
-                add_claim(record)
-        for turn_id in graph_result.selected_turn_ids:
+                add_claim(record, include_sources=False)
+        for turn_id in graph_turn_ids:
             turn = index.by_turn_id.get(turn_id)
             if turn is not None:
                 add_turn(turn)
 
+    if dynamic_expansion["triggered"] and graph_result is not None:
+        for claim_id in _dynamic_graph_claim_ids_to_expand(graph_result, reason=graph_context_reason):
+            if claim_id in selected_claim_set:
+                continue
+            record = index.by_claim_id.get(claim_id)
+            if record is not None and add_claim(record, include_sources=False):
+                dynamic_added_claim_ids.append(claim_id)
+        for turn_id in _dynamic_graph_turn_ids_to_expand(graph_result, reason=graph_context_reason):
+            if turn_id in selected_turn_ids:
+                continue
+            turn = index.by_turn_id.get(turn_id)
+            if turn is not None and add_turn(turn, direct=True):
+                dynamic_added_turn_ids.append(turn_id)
+
+    skip_assistant_fallback = _graph_prefers_user_fallback(graph_result)
     for candidate in candidates:
         if candidate.score <= 0.0 and selected_claim_ids:
             break
         if candidate.kind == "claim":
             record = index.by_claim_id[candidate.uid]
+            if skip_assistant_fallback and record.claim.metadata.get("role") == "assistant":
+                continue
             add_claim(record)
             continue
 
         turn = index.by_turn_id[candidate.uid]
+        if skip_assistant_fallback and turn.role == "assistant":
+            continue
         add_turn(turn, direct=True)
 
     rendered_turn_ids = sorted(selected_turn_ids, key=lambda tid: index.by_turn_id[tid].sort_key)
@@ -193,6 +335,7 @@ def retrieve_memory(
         selected_turn_ids=rendered_turn_ids,
         selected_direct_turn_ids=selected_direct_turn_ids,
         prefix_text=graph_context,
+        query_type=query_type,
     )
     searched_sessions = _sessions_for_turns(index, rendered_turn_ids)
     not_searched = [sid for sid in index.session_ids if sid not in set(searched_sessions)]
@@ -207,6 +350,11 @@ def retrieve_memory(
             "selected_turn_ids": rendered_turn_ids,
             "temporal_targets": [target.isoformat() for target in temporal_targets],
             "graph_query": _graph_query_metadata(graph_result),
+            "graph_context_rendered": graph_context_rendered,
+            "graph_context_skip_reason": graph_context_reason,
+            "dynamic_expansion": dynamic_expansion,
+            "dynamic_added_claim_ids": dynamic_added_claim_ids,
+            "dynamic_added_turn_ids": dynamic_added_turn_ids,
         },
     )
     confidence = _build_confidence(
@@ -239,6 +387,11 @@ def retrieve_memory(
             "searched_sessions": searched_sessions,
             "n_direct_turns": len(selected_direct_turn_ids),
             "graph_query": _graph_query_metadata(graph_result),
+            "graph_context_rendered": graph_context_rendered,
+            "graph_context_skip_reason": graph_context_reason,
+            "dynamic_expansion": dynamic_expansion,
+            "dynamic_added_claim_ids": dynamic_added_claim_ids,
+            "dynamic_added_turn_ids": dynamic_added_turn_ids,
         },
     )
     return MemoryRetrievalResult(
@@ -257,7 +410,9 @@ def retrieve_memory(
             "n_turns_indexed": len(index.turns),
             "n_candidates_considered": len(candidates),
             "n_direct_turns_selected": len(selected_direct_turn_ids),
-            "token_budget": token_budget,
+            "token_budget": effective_token_budget,
+            "requested_token_budget": token_budget,
+            "adaptive_budget_applied": effective_token_budget != token_budget,
             "estimated_context_tokens": token_counter(context_text),
             "temporal_targets": [target.isoformat() for target in temporal_targets],
             "selected_unit_ids": [
@@ -266,6 +421,11 @@ def retrieve_memory(
                 *(graph_result.selected_event_ids if graph_result else []),
             ],
             "graph_query": _graph_query_metadata(graph_result),
+            "graph_context_rendered": graph_context_rendered,
+            "graph_context_skip_reason": graph_context_reason,
+            "dynamic_expansion": dynamic_expansion,
+            "dynamic_added_claim_ids": dynamic_added_claim_ids,
+            "dynamic_added_turn_ids": dynamic_added_turn_ids,
             "claim_scores": {cid: round(scored_claims.get(cid, 0.0), 4) for cid in selected_claim_ids},
             "turn_scores": {tid: round(scored_turns.get(tid, 0.0), 4) for tid in rendered_turn_ids},
         },
@@ -280,12 +440,14 @@ def _score_claims(
     external_scores: dict[str, float],
     temporal_targets: list[date],
 ) -> dict[str, float]:
-    q_tokens = _query_tokens(query)
+    q_tokens = _salient_query_tokens(query)
     out: dict[str, float] = {}
     for record in claims:
         lexical = _token_overlap(q_tokens, claim_tokens(record.text))
         external = _positive_cosine(external_scores.get(record.claim_id, 0.0))
-        score = (0.82 * external) + (0.18 * lexical)
+        phrase = _phrase_overlap_score(query, record.text)
+        score = (0.72 * external) + (0.23 * lexical) + (0.05 * phrase)
+        score += _valuation_ratio_boost(memory_query=query, text=record.text)
         score += _temporal_boost(record.claim.valid_from, temporal_targets)
         if query_type in {"latest", "current", "final"}:
             score += _recency_boost(record.sort_key[0]) * 0.15
@@ -309,12 +471,14 @@ def _score_turns(
     external_scores: dict[str, float],
     temporal_targets: list[date],
 ) -> dict[str, float]:
-    q_tokens = _query_tokens(query)
+    q_tokens = _salient_query_tokens(query)
     out: dict[str, float] = {}
     for turn in turns:
-        lexical = _token_overlap(q_tokens, _query_tokens(turn.text))
+        lexical = _token_overlap(q_tokens, _salient_query_tokens(turn.text))
         external = _positive_cosine(external_scores.get(turn.turn_id, 0.0))
-        score = (0.74 * external) + (0.26 * lexical)
+        phrase = _phrase_overlap_score(query, turn.text)
+        score = (0.66 * external) + (0.28 * lexical) + (0.06 * phrase)
+        score += _valuation_ratio_boost(memory_query=query, text=turn.text)
         score += _temporal_boost(turn.session_date, temporal_targets)
         if query_type in {"temporal", "aggregate", "multi_hop"}:
             score += 0.03
@@ -346,6 +510,391 @@ def _rank_candidates(
     return sorted(candidates, key=lambda c: (-c.score, c.sort_key, c.uid))
 
 
+def _effective_token_budget(token_budget: int, *, query_type: str, graph_result: Any | None) -> int:
+    """Clamp very large caller budgets to an evidence-shaped budget.
+
+    Large context windows are useful for fallback callers, but memory retrieval
+    should default to a compact evidence packet plus supporting sources. Callers
+    requesting a moderate budget keep that exact budget.
+    """
+
+    if token_budget <= _LARGE_REQUESTED_BUDGET:
+        return token_budget
+    budget = _ADAPTIVE_BUDGETS.get(query_type, _ADAPTIVE_BUDGETS["unknown"])
+    if graph_result is not None:
+        operation = str(getattr(graph_result, "operation", ""))
+        matched = int((getattr(graph_result, "metadata", {}) or {}).get("matched_events") or 0)
+        if operation.startswith("aggregate/") and matched > 12:
+            budget = max(budget, 3800)
+        if operation == "temporal/timeline" and matched > 12:
+            budget = max(budget, 3600)
+    return min(token_budget, budget)
+
+
+def _packet_row_options(graph_result: Any) -> tuple[int, ...]:
+    matched = int((getattr(graph_result, "metadata", {}) or {}).get("matched_events") or 0)
+    operation = str(getattr(graph_result, "operation", ""))
+    if operation.startswith("aggregate/") and matched <= 12:
+        return (12, 8, 4, 0)
+    if operation.startswith("aggregate/"):
+        return (24, 16, 8, 0)
+    if operation in {"temporal/latest", "current/latest"}:
+        return (8, 4, 2, 0)
+    return (16, 8, 4, 0)
+
+
+def _graph_answer_packet_status(graph_result: Any | None, *, query: str, query_type: str) -> tuple[bool, str]:
+    if graph_result is None:
+        return False, "no_graph_result"
+    if not getattr(graph_result, "answer_hint", None):
+        return False, "no_answer_hint"
+
+    metadata = getattr(graph_result, "metadata", {}) or {}
+    operation = str(getattr(graph_result, "operation", ""))
+    matched = int(metadata.get("matched_events") or 0)
+    if matched <= 0:
+        return False, "no_matched_events"
+    if operation == "aggregate/count":
+        count_method = metadata.get("count_method")
+        if count_method == "latest_quantity_snapshot":
+            return True, "latest_quantity_snapshot"
+        if count_method == "quantity_sum":
+            if _query_has_snapshot_count_intent(query):
+                return False, "snapshot_query_quantity_sum_suppressed"
+            return True, "quantity_count"
+        if count_method == "event_count" and _query_has_strong_snapshot_count_intent(query) and matched > 1:
+            return False, "snapshot_query_event_count_suppressed"
+        if matched <= 12:
+            return True, "bounded_event_count"
+        return False, "broad_event_count"
+
+    if operation == "aggregate/sum":
+        if metadata.get("sum_method") == "latest_quantity_snapshot":
+            return True, "latest_quantity_snapshot"
+        if _query_has_value_snapshot_intent(query):
+            return False, "snapshot_query_sum_suppressed"
+        values = list(metadata.get("sum_values") or [])
+        if values and matched <= 24:
+            return True, "bounded_quantity_sum"
+        if values:
+            return False, "broad_quantity_sum"
+        if matched <= 4:
+            return True, "bounded_missing_quantity_sum"
+        return False, "broad_missing_quantity_sum"
+
+    if operation == "aggregate/max":
+        group_values = metadata.get("group_values") or {}
+        if group_values and matched <= 24:
+            return True, "bounded_group_max"
+        if group_values:
+            return False, "broad_group_max"
+        return False, "missing_group_max"
+
+    if operation == "aggregate/difference":
+        values = list(metadata.get("difference_values") or [])
+        if len(values) >= 2 and matched <= 8:
+            return True, "bounded_difference"
+        return False, "insufficient_difference_evidence"
+
+    if operation == "temporal/date-delta":
+        if metadata.get("delta_days") is None:
+            return False, "missing_date_delta"
+        if matched <= 3:
+            return True, "bounded_date_delta"
+        return False, "broad_date_delta"
+
+    if operation == "temporal/latest":
+        if matched <= 12:
+            return True, "bounded_latest"
+        return False, "broad_latest"
+
+    if operation == "temporal/timeline":
+        if matched <= 16:
+            return True, "bounded_timeline"
+        return False, "broad_timeline"
+
+    if query_type in {"current", "latest", "final"} and matched <= 12:
+        return True, "bounded_current"
+    if matched <= 12:
+        return True, "bounded_graph_result"
+    return False, "broad_graph_result"
+
+
+def _query_has_snapshot_count_intent(query: str) -> bool:
+    return bool(_SNAPSHOT_COUNT_INTENT_RE.search(query) and not _COUNT_ADDITIVE_INTENT_RE.search(query))
+
+
+def _query_has_strong_snapshot_count_intent(query: str) -> bool:
+    return bool(_STRONG_SNAPSHOT_COUNT_INTENT_RE.search(query))
+
+
+def _query_has_value_snapshot_intent(query: str) -> bool:
+    return bool(_SNAPSHOT_VALUE_INTENT_RE.search(query))
+
+
+def _dynamic_expansion_plan(
+    graph_result: Any | None,
+    *,
+    graph_context_ok: bool,
+    graph_context_reason: str,
+    query: str,
+    query_type: str,
+) -> dict[str, Any]:
+    reasons: list[str] = []
+    actions: list[str] = []
+    metadata = getattr(graph_result, "metadata", {}) or {}
+    operation = str(getattr(graph_result, "operation", ""))
+    answer_confidence = float(metadata.get("answer_confidence") or 0.0)
+
+    if graph_result is not None and answer_confidence and answer_confidence < _GRAPH_ANSWER_CONFIDENCE_FLOOR:
+        reasons.append("graph_answer_confidence_below_threshold")
+    if graph_result is not None and not graph_context_ok and graph_context_reason in {
+        "low_confidence_graph_answer",
+        "snapshot_query_quantity_sum_suppressed",
+        "snapshot_query_event_count_suppressed",
+        "snapshot_query_sum_suppressed",
+        "broad_event_count",
+        "broad_quantity_sum",
+        "broad_group_max",
+        "broad_timeline",
+        "broad_latest",
+    }:
+        reasons.append(graph_context_reason)
+    if operation.startswith("aggregate/") and _query_has_snapshot_count_intent(query):
+        method = str(metadata.get("count_method") or metadata.get("sum_method") or "")
+        if method not in {"latest_quantity_snapshot", "named_entity_count"}:
+            reasons.append("snapshot_intent_needs_raw_evidence_check")
+    if query_type in {"aggregate", "temporal"} and graph_result is None:
+        reasons.append("no_executable_graph_result")
+
+    if graph_result is not None and reasons:
+        actions.append("expand_graph_evidence_without_answer_packet" if not graph_context_ok else "expand_additional_graph_evidence")
+    elif reasons:
+        actions.append("fall_back_to_ranked_candidates")
+
+    return {
+        "triggered": bool(reasons),
+        "reasons": _dedupe(reasons),
+        "actions": actions,
+        "answer_confidence": answer_confidence or None,
+    }
+
+
+def _graph_prefers_user_fallback(graph_result: Any | None) -> bool:
+    if graph_result is None:
+        return False
+    metadata = getattr(graph_result, "metadata", {}) or {}
+    return metadata.get("count_method") == "named_entity_count"
+
+
+def _render_answer_packet(
+    index: MemoryIndex,
+    graph_result: Any,
+    *,
+    query: str,
+    query_type: str,
+    max_rows: int,
+) -> str:
+    lines = ["[memory-answer-packet]"]
+    lines.append(f"Question type: {query_type}")
+    lines.append(f"Question: {query}")
+    if graph_result.answer_hint:
+        lines.append(f"Computed answer candidate: {graph_result.answer_hint}")
+    guidance = (
+        "Use the computed answer when the evidence rows match the question; "
+        "use the raw source turns only to verify or resolve ambiguity."
+    )
+    if query_type in {"aggregate", "temporal", "multi_hop"}:
+        guidance += " Include nearby facts that identify each evidence row."
+    lines.append(guidance)
+    lines.append("")
+    lines.append(graph_result.render(max_rows=max_rows))
+    related = _graph_related_fact_lines(index, graph_result, query=query)
+    if related:
+        lines.append("")
+        lines.append("Related nearby facts:")
+        lines.extend(f"- {fact}" for fact in related)
+    return "\n".join(lines)
+
+
+def _graph_related_fact_lines(
+    index: MemoryIndex,
+    graph_result: Any,
+    *,
+    query: str,
+    max_facts: int = 10,
+) -> list[str]:
+    rows = list(getattr(graph_result, "evidence_rows", []) or [])
+    if not rows:
+        return []
+
+    anchor_turn_ids = _dedupe(
+        str(turn_id)
+        for row in rows[:12]
+        for turn_id in (row.get("turn_ids") or [])
+        if turn_id in index.by_turn_id
+    )
+    if not anchor_turn_ids:
+        return []
+
+    selected_claim_ids = {
+        str(row.get("claim_id"))
+        for row in rows
+        if row.get("claim_id")
+    }
+
+    query_tokens = _salient_query_tokens(query)
+
+    facts: list[str] = []
+    seen: set[str] = set()
+    for row_index, row in enumerate(rows[:12], start=1):
+        row_turn_ids = [
+            str(turn_id)
+            for turn_id in (row.get("turn_ids") or [])
+            if turn_id in index.by_turn_id
+        ]
+        if not row_turn_ids:
+            continue
+        row_anchor_idxs_by_session: dict[str, list[int]] = {}
+        for turn_id in row_turn_ids:
+            turn = index.by_turn_id[turn_id]
+            row_anchor_idxs_by_session.setdefault(turn.session_id, []).append(turn.turn_idx)
+        row_event_tokens = _salient_query_tokens(str(row.get("event") or ""))
+
+        candidates: list[tuple[float, tuple, str]] = []
+        for record in index.claims:
+            if record.claim_id in selected_claim_ids:
+                continue
+            if record.claim.metadata.get("role") != "user":
+                continue
+            source_turns = [
+                index.by_turn_id[turn_id]
+                for turn_id in record.source_turn_ids
+                if turn_id in index.by_turn_id
+            ]
+            if not source_turns:
+                continue
+
+            same_turn = False
+            min_distance: int | None = None
+            for turn in source_turns:
+                anchor_idxs = row_anchor_idxs_by_session.get(turn.session_id)
+                if not anchor_idxs:
+                    continue
+                distance = min(abs(turn.turn_idx - idx) for idx in anchor_idxs)
+                if distance <= 4:
+                    min_distance = distance if min_distance is None else min(min_distance, distance)
+                if turn.turn_id in row_turn_ids:
+                    same_turn = True
+            if min_distance is None:
+                continue
+
+            record_tokens = _salient_query_tokens(record.text)
+            query_overlap = _token_overlap(query_tokens, record_tokens)
+            event_overlap = _token_overlap(row_event_tokens, record_tokens)
+            if min_distance > 0 and query_overlap <= 0.0 and event_overlap <= 0.0:
+                continue
+
+            score = (
+                (2.0 if same_turn else 0.0)
+                + (1.0 / (min_distance + 1))
+                + query_overlap
+                + event_overlap
+                + _identity_detail_boost(record.text)
+            )
+            candidates.append((score, record.sort_key, record.text))
+
+        picked_for_row = 0
+        for _, _, text in sorted(candidates, key=lambda item: (-item[0], item[1], item[2])):
+            if text in seen:
+                continue
+            seen.add(text)
+            facts.append(f"row {row_index}: {text}")
+            picked_for_row += 1
+            if len(facts) >= max_facts:
+                return facts
+            if picked_for_row >= 3:
+                break
+    return facts
+
+
+def _identity_detail_boost(text: str) -> float:
+    lower = text.lower()
+    score = 0.0
+    if re.search(r"\b(named|partner|married|bridesmaid|cousin|friend|roommate)\b", lower):
+        score += 0.45
+    names = [
+        name
+        for name in re.findall(r"\b[A-Z][a-z]{2,}\b", text)
+        if name not in {"The", "User", "Assistant"}
+    ]
+    return score + min(0.3, 0.1 * len(names))
+
+
+def _graph_claim_ids_to_expand(graph_result: Any) -> list[str]:
+    operation = str(getattr(graph_result, "operation", ""))
+    rows = list(getattr(graph_result, "evidence_rows", []) or [])
+    if operation.startswith("aggregate/"):
+        limit = 16
+    elif operation in {"temporal/latest", "current/latest"}:
+        limit = 6
+    else:
+        limit = 10
+    return _dedupe(
+        str(row.get("claim_id"))
+        for row in rows[:limit]
+        if row.get("claim_id")
+    )
+
+
+def _dynamic_graph_claim_ids_to_expand(graph_result: Any, *, reason: str) -> list[str]:
+    operation = str(getattr(graph_result, "operation", ""))
+    rows = list(getattr(graph_result, "evidence_rows", []) or [])
+    if reason.startswith("broad_"):
+        limit = 32
+    elif operation.startswith("aggregate/"):
+        limit = 24
+    else:
+        limit = 14
+    return _dedupe(
+        str(row.get("claim_id"))
+        for row in rows[:limit]
+        if row.get("claim_id")
+    )
+
+
+def _graph_turn_ids_to_expand(graph_result: Any) -> list[str]:
+    operation = str(getattr(graph_result, "operation", ""))
+    rows = list(getattr(graph_result, "evidence_rows", []) or [])
+    if operation.startswith("aggregate/"):
+        limit = 6
+    elif operation in {"temporal/latest", "current/latest"}:
+        limit = 4
+    else:
+        limit = 5
+    return _dedupe(
+        str(turn_id)
+        for row in rows[:limit]
+        for turn_id in (row.get("turn_ids") or [])
+    )
+
+
+def _dynamic_graph_turn_ids_to_expand(graph_result: Any, *, reason: str) -> list[str]:
+    operation = str(getattr(graph_result, "operation", ""))
+    rows = list(getattr(graph_result, "evidence_rows", []) or [])
+    if reason.startswith("broad_"):
+        limit = 16
+    elif operation.startswith("aggregate/"):
+        limit = 12
+    else:
+        limit = 8
+    return _dedupe(
+        str(turn_id)
+        for row in rows[:limit]
+        for turn_id in (row.get("turn_ids") or [])
+    )
+
+
 def _render_context(
     index: MemoryIndex,
     *,
@@ -353,6 +902,7 @@ def _render_context(
     selected_turn_ids: list[str],
     selected_direct_turn_ids: set[str],
     prefix_text: str = "",
+    query_type: str = "",
 ) -> str:
     claims_for_turn: dict[str, list[MemoryClaimRecord]] = {}
     standalone_claims: list[MemoryClaimRecord] = []
@@ -377,7 +927,7 @@ def _render_context(
         entries.append((turn.sort_key, block))
     for record in standalone_claims:
         entries.append((record.sort_key, _claim_header(record)))
-    entries.sort(key=lambda item: item[0])
+    entries.sort(key=lambda item: item[0], reverse=query_type in {"current", "latest", "final"})
     blocks = [block for _, block in entries]
     if prefix_text:
         blocks.insert(0, prefix_text)
@@ -435,6 +985,17 @@ def _sessions_for_turns(index: MemoryIndex, turn_ids: Iterable[str]) -> list[str
             continue
         seen.add(turn.session_id)
         out.append(turn.session_id)
+    return out
+
+
+def _dedupe(values: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
     return out
 
 
@@ -513,11 +1074,74 @@ def _query_tokens(text: str) -> set[str]:
     return {match.group(0).lower() for match in _TOKEN_RE.finditer(text) if len(match.group(0)) >= 3}
 
 
+def _salient_query_tokens(text: str) -> set[str]:
+    tokens = {
+        token
+        for token in claim_tokens(text)
+        if token not in _QUERY_STOPWORDS and not token.isdigit()
+    }
+    if "painting" in tokens:
+        tokens.update({"art", "artwork"})
+    if "artwork" in tokens:
+        tokens.update({"art", "painting"})
+    if "wedding" in tokens:
+        tokens.add("wedd")
+    if "wedd" in tokens:
+        tokens.add("wedding")
+    return tokens or _query_tokens(text)
+
+
 def _token_overlap(query_tokens: set[str], doc_tokens: set[str]) -> float:
     if not query_tokens or not doc_tokens:
         return 0.0
     hits = len(query_tokens & doc_tokens)
     return hits / max(1, len(query_tokens))
+
+
+def _phrase_overlap_score(query: str, text: str) -> float:
+    query_terms = _ordered_salient_terms(query)
+    if len(query_terms) < 2:
+        return 0.0
+    haystack = " ".join(_ordered_salient_terms(text))
+    if not haystack:
+        return 0.0
+    phrases: list[str] = []
+    for size in (3, 2):
+        for i in range(0, len(query_terms) - size + 1):
+            phrase = " ".join(query_terms[i : i + size])
+            if phrase not in phrases:
+                phrases.append(phrase)
+    if not phrases:
+        return 0.0
+    hits = sum(1 for phrase in phrases if phrase in haystack)
+    return hits / len(phrases)
+
+
+def _valuation_ratio_boost(*, memory_query: str, text: str) -> float:
+    q_tokens = _ordered_salient_terms(memory_query)
+    if not ({"worth", "value", "paid", "pay", "cost"} & set(q_tokens)):
+        return 0.0
+    text_tokens = set(_ordered_salient_terms(text))
+    has_value = bool({"worth", "value", "valued"} & text_tokens)
+    has_paid = bool({"paid", "pay", "cost"} & text_tokens)
+    has_ratio = bool(_VALUATION_RATIO_TERMS & text_tokens)
+    if has_value and has_paid and has_ratio:
+        return 0.35
+    if has_paid and has_ratio:
+        return 0.22
+    if has_value and has_ratio:
+        return 0.16
+    return 0.0
+
+
+def _ordered_salient_terms(text: str) -> list[str]:
+    return [
+        token.lower()
+        for token in _TOKEN_RE.findall(text)
+        if len(token) >= 3
+        and token.lower() not in _QUERY_STOPWORDS
+        and not token.isdigit()
+    ]
 
 
 def _positive_cosine(value: float) -> float:
