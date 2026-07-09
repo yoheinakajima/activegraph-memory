@@ -133,7 +133,20 @@ _CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
         "costco",
         "aldi",
     ),
-    "health": ("doctor", "dentist", "medication", "therapy", "health", "appointment"),
+    "health": (
+        "doctor",
+        "dr.",
+        "dr ",
+        "physician",
+        "surgeon",
+        "dentist",
+        "medication",
+        "therapy",
+        "health",
+        "appointment",
+        "follow-up",
+        "checkup",
+    ),
     "home": ("home", "apartment", "kitchen", "room", "furniture", "appliance", "smoker", "sofa"),
     "music": ("music", "album", "song", "concert", "playlist", "guitar", "piano"),
     "plant": (
@@ -168,6 +181,10 @@ _CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
 _PREDICATE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("birth", ("born", "birth", "gave birth", "welcomed")),
     ("cancel", ("cancel", "cancelled", "canceled", "dropped", "skipped")),
+    ("graduate", ("graduate", "graduated", "graduation")),
+    ("start", ("start", "started", "begin", "began")),
+    ("finish", ("finish", "finished", "complete", "completed")),
+    ("move", ("move", "moved", "relocated")),
     ("repair", ("repair", "repaired", "fixed", "serviced", "replaced", "maintenance")),
     ("purchase", ("buy", "bought", "purchase", "purchased", "ordered", "paid", "spend", "spent", "cost")),
     ("acquire", ("acquire", "acquired", "got", "received", "picked up", "adopted")),
@@ -176,12 +193,14 @@ _PREDICATE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("recommend", ("recommend", "recommended", "suggested", "advised")),
     ("decide", ("decide", "decided", "agreed", "approved", "chose", "selected")),
     ("prefer", ("prefer", "prefers", "favorite", "likes")),
-    ("schedule", ("schedule", "scheduled", "booked", "planned", "appointment")),
+    ("schedule", ("schedule", "scheduled", "booked", "planned", "appointment", "follow-up", "checkup")),
     ("donate", ("donate", "donated", "gave", "raise", "raised", "fundraiser", "sponsor", "sponsored", "pledge", "pledged")),
 )
 
 _PREDICATE_GROUPS: tuple[set[str], ...] = (
     {"purchase", "acquire"},
+    {"start", "acquire"},
+    {"finish", "graduate"},
     {"attend", "visit"},
     {"repair", "purchase"},
     {"donate", "expense"},
@@ -252,6 +271,8 @@ def infer_predicate(text: str) -> str:
             continue
         if predicate == "donate" and re.search(r"\bborn\s+and\s+raised\b", lower):
             continue
+        if predicate == "start" and re.search(r"\bstart of (?:the )?(?:year|month|week|day)\b", lower):
+            continue
         if any(_contains_keyword(lower, tokens, pattern) for pattern in patterns):
             return predicate
     return "state"
@@ -284,6 +305,8 @@ def _contains_keyword(lower_text: str, tokens: set[str], keyword: str) -> bool:
         return bool(re.search(pattern, lower_text))
     if not keyword.isalnum():
         return keyword in lower_text
+    if keyword == "ordered":
+        return bool(re.search(r"\bordered\b", lower_text))
     return normalize_token(keyword) in tokens
 
 

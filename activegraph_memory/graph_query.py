@@ -82,6 +82,56 @@ _TIMELINE_QUERY_RE = re.compile(
     r"\b(first|earliest|latest|order|ordered|timeline|history|chronological|when)\b",
     re.IGNORECASE,
 )
+_ORDER_QUERY_RE = re.compile(
+    r"\b(which|who|what)\b.*\b(first|earliest|before|after)\b|"
+    r"\b(first|second|third)\b.*\bamong\b|"
+    r"\border\b.*\bamong\b",
+    re.IGNORECASE,
+)
+_QUOTED_OPERAND_RE = re.compile(r"['\"]([^'\"]+)['\"]")
+_AMONG_RE = re.compile(r"\bamong\s+(?P<items>.+?)[?.!]?$", re.IGNORECASE)
+_COMPARISON_TAIL_RE = re.compile(r",\s*(?P<items>[^?!.]+?)[?!.]?$")
+_ORDINAL_WORDS = {"first", "second", "third", "fourth", "fifth"}
+_ORDER_ACTION_CUES = {
+    "arriv",
+    "arrived",
+    "attend",
+    "attended",
+    "becam",
+    "became",
+    "begin",
+    "began",
+    "bought",
+    "buy",
+    "complet",
+    "completed",
+    "decid",
+    "decided",
+    "finish",
+    "finished",
+    "fix",
+    "fixed",
+    "get",
+    "got",
+    "graduat",
+    "graduated",
+    "mov",
+    "moved",
+    "participat",
+    "participated",
+    "purchas",
+    "purchased",
+    "receiv",
+    "received",
+    "set",
+    "start",
+    "started",
+    "visit",
+    "visited",
+    "watch",
+    "watched",
+}
+_ORDER_NEGATIVE_CUES = {"delay", "delayed", "expected", "pre-order", "preordered", "pre-ordered"}
 _LATEST_QUERY_TYPES = {"current", "latest", "final"}
 _AUXILIARY_CATEGORIES = {"event", "expense"}
 _EVENT_GENERIC_MATCH_TOKENS = {
@@ -119,6 +169,7 @@ _GENERIC_MATCH_TOKENS = {
     "from",
     "get",
     "got",
+    "go",
     "happen",
     "happened",
     "have",
@@ -180,6 +231,7 @@ _GENERIC_MATCH_TOKENS = {
     "items",
     "what",
     "when",
+    "went",
     "week",
     "weeks",
     "which",
@@ -319,11 +371,11 @@ class GraphQueryResult:
     evidence_rows: list[dict[str, Any]]
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def render(self, *, max_rows: int = 24) -> str:
+    def render(self, *, max_rows: int = 24, include_answer_hint: bool = True) -> str:
         """Render a compact, source-oriented block for answer synthesis."""
 
         lines = [f"[graph-query: {self.operation}]"]
-        if self.answer_hint:
+        if self.answer_hint and include_answer_hint:
             lines.append(self.answer_hint)
         filters = self.metadata.get("filters") or {}
         filter_parts = []
@@ -403,6 +455,16 @@ def run_graph_query(
     )
     matched = _dedupe_events(matched)
 
+    if operation == "order":
+        return _order_result(
+            index,
+            matched,
+            query=query,
+            query_categories=query_categories,
+            inferred_categories=inferred_categories,
+            query_predicate=query_predicate,
+            time_window=time_window,
+        )
     if operation == "date_delta":
         return _date_delta_result(
             index,
@@ -545,6 +607,8 @@ def _looks_like_graph_query(query: str) -> bool:
 
 
 def _infer_operation(query: str, *, query_type: str) -> str:
+    if _ORDER_QUERY_RE.search(query):
+        return "order"
     if _DATE_DELTA_QUERY_RE.search(query):
         return "date_delta"
     if _DIFFERENCE_QUERY_RE.search(query):
@@ -613,6 +677,8 @@ def _event_predicate_matches(
         return True
     if "charity" in query_categories and query_predicate in {"attend", "donate"}:
         return event_predicate in {"attend", "donate"}
+    if "health" in query_categories and query_predicate == "schedule":
+        return event_predicate in {"schedule", "attend", "visit", "state"}
     return False
 
 
@@ -1080,6 +1146,208 @@ def _prefer_user_events(events: list[MemoryEventRecord]) -> list[MemoryEventReco
     return user_events or events
 
 
+def _order_result(
+    index: MemoryIndex,
+    events: list[MemoryEventRecord],
+    *,
+    query: str,
+    query_categories: tuple[str, ...],
+    inferred_categories: tuple[str, ...],
+    query_predicate: str,
+    time_window: QueryTimeWindow,
+) -> GraphQueryResult:
+    operands = _comparison_operands(query)
+    if len(operands) < 2:
+        return _timeline_result(
+            index,
+            events,
+            query_categories=query_categories,
+            inferred_categories=inferred_categories,
+            query_predicate=query_predicate,
+            time_window=time_window,
+        )
+
+    candidates_by_operand: dict[str, list[tuple[date, MemoryEventRecord]]] = {}
+    for operand in operands:
+        candidates = _dated_operand_events(
+            index,
+            operand,
+            query=query,
+            query_categories=query_categories,
+            query_predicate=query_predicate,
+            time_window=time_window,
+        )
+        if candidates:
+            candidates_by_operand[operand] = candidates
+
+    found_operands = list(candidates_by_operand)
+    missing_operands = [operand for operand in operands if operand not in candidates_by_operand]
+    selected: list[tuple[str, date, MemoryEventRecord]] = [
+        (operand, candidates[0][0], candidates[0][1])
+        for operand, candidates in candidates_by_operand.items()
+    ]
+    selected.sort(key=lambda item: (item[1], item[2].sort_key, item[0]))
+    selected_events = [event for _, _, event in selected]
+
+    metadata: dict[str, Any] = {
+        "operands": operands,
+        "found_operands": found_operands,
+        "missing_operands": missing_operands,
+        "comparison_complete": not missing_operands,
+        "answer_confidence": 0.86 if not missing_operands else 0.9,
+    }
+    if missing_operands:
+        answer = (
+            "Insufficient comparison evidence: "
+            f"found dated evidence for {_join_labels(found_operands) or 'none'}, "
+            f"but not for {_join_labels(missing_operands)}."
+        )
+    else:
+        ordered = [f"{operand} ({dt.isoformat()})" for operand, dt, _ in selected]
+        first = selected[0][0]
+        answer = f"Computed temporal order: {' -> '.join(ordered)}. First: {first}."
+    return _result(
+        index,
+        selected_events,
+        operation="temporal/order",
+        answer_hint=answer,
+        query_categories=query_categories,
+        inferred_categories=inferred_categories,
+        query_predicate=query_predicate,
+        time_window=time_window,
+        metadata=metadata,
+    )
+
+
+def _comparison_operands(query: str) -> list[str]:
+    quoted = [_clean_operand(item) for item in _QUOTED_OPERAND_RE.findall(query)]
+    if len(quoted) >= 2:
+        return _dedupe(item for item in quoted if item)
+
+    among = _AMONG_RE.search(query)
+    if among:
+        return _split_operand_list(among.group("items"))
+
+    tail_match = _COMPARISON_TAIL_RE.search(query)
+    tail = tail_match.group("items") if tail_match else query
+    if re.search(r"\bor\b|\band\b", tail, re.IGNORECASE):
+        operands = _split_operand_list(tail)
+        if len(operands) >= 2:
+            return operands
+    return []
+
+
+def _split_operand_list(text: str) -> list[str]:
+    cleaned = re.sub(r"\b(first|second|third|fourth|fifth)\b", "", text, flags=re.IGNORECASE)
+    parts = re.split(r"\s*,\s*|\s+\bor\b\s+|\s+\band\b\s+", cleaned)
+    return _dedupe(_clean_operand(part) for part in parts if _clean_operand(part))
+
+
+def _clean_operand(text: str) -> str:
+    text = re.sub(r"[?.!]+$", "", text.strip())
+    text = re.sub(r"^(?:the|a|an|my|our|your)\s+", "", text, flags=re.IGNORECASE)
+    text = re.sub(
+        r"^(?:attendance at|attending|start of|beginning of|completion of|finishing|"
+        r"day i|day you|time i|time you)\s+",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"^(?:the|a|an|my|our|your)\s+", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b(?:first|earliest|latest)\b", "", text, flags=re.IGNORECASE)
+    text = " ".join(text.split())
+    if not text:
+        return ""
+    tokens = text.lower().split()
+    if len(tokens) == 1 and tokens[0] in _ORDINAL_WORDS:
+        return ""
+    return text
+
+
+def _dated_operand_events(
+    index: MemoryIndex,
+    operand: str,
+    *,
+    query: str,
+    query_categories: tuple[str, ...],
+    query_predicate: str,
+    time_window: QueryTimeWindow,
+) -> list[tuple[date, MemoryEventRecord]]:
+    operand_tokens = significant_tokens(operand)
+    out: list[tuple[date, MemoryEventRecord]] = []
+    for event in index.events:
+        if event.metadata.get("claim_status") == "superseded":
+            continue
+        if event.metadata.get("polarity") == "negative":
+            continue
+        if query_categories and not any(category in event.category_ids for category in query_categories):
+            continue
+        if not time_window.contains(event):
+            continue
+        event_text = _event_match_text(index, event)
+        event_tokens = significant_tokens(event_text)
+        if operand_tokens and not operand_tokens <= event_tokens:
+            phrase = _normalized_token_sequence(operand)
+            if phrase not in _normalized_token_sequence(event_text):
+                continue
+        event_date = _date_for_operand(event, operand=operand, query=query)
+        if event_date is None:
+            continue
+        out.append((event_date, event))
+    out.sort(key=lambda item: (item[0], item[1].sort_key, item[1].event_id))
+    return out
+
+
+def _date_for_operand(event: MemoryEventRecord, *, operand: str, query: str) -> date | None:
+    refs = [
+        ref for ref in event.temporal_refs
+        if _parse_date(ref.resolved_start or ref.resolved_end) is not None
+    ]
+    if not refs:
+        return _parse_date(event.event_start or event.observed_at)
+
+    text = event.text
+    operand_pos = text.lower().find(operand.lower())
+    query_tokens = significant_tokens(query)
+    scored: list[tuple[float, date, str]] = []
+    for ref in refs:
+        ref_date = _parse_date(ref.resolved_start or ref.resolved_end)
+        if ref_date is None:
+            continue
+        ref_pos = text.lower().find(ref.text.lower())
+        score = 0.0
+        if operand_pos >= 0 and ref_pos >= 0:
+            score -= min(60, abs(ref_pos - operand_pos)) / 60
+        if ref_pos >= 0 and query_tokens & _ORDER_ACTION_CUES:
+            score += _cue_proximity(text, ref_pos, _ORDER_ACTION_CUES, radius=56)
+        if ref_pos >= 0:
+            score -= 1.25 * _cue_proximity(text, ref_pos, _ORDER_NEGATIVE_CUES, radius=56)
+        scored.append((score, ref_date, ref.text))
+    if not scored:
+        return _parse_date(event.event_start or event.observed_at)
+    scored.sort(key=lambda item: (-item[0], item[1], item[2]))
+    return scored[0][1]
+
+
+def _cue_proximity(text: str, ref_pos: int, cues: set[str], *, radius: int) -> float:
+    lower = text.lower()
+    best = 0.0
+    for cue in cues:
+        for match in re.finditer(re.escape(cue), lower):
+            distance = abs(match.start() - ref_pos)
+            if distance <= radius:
+                best = max(best, 1.0 - (distance / radius))
+    return best
+
+
+def _join_labels(labels: list[str]) -> str:
+    if not labels:
+        return ""
+    if len(labels) == 1:
+        return labels[0]
+    return ", ".join(labels[:-1]) + f" and {labels[-1]}"
+
+
 def _date_delta_result(
     index: MemoryIndex,
     events: list[MemoryEventRecord],
@@ -1325,6 +1593,18 @@ def _specific_query_tokens(query: str, inferred_categories: tuple[str, ...]) -> 
         for category_id in inferred_categories
         for token in significant_tokens(category_label(category_id))
     }
+    if "health" in inferred_categories:
+        category_tokens.update(
+            {
+                "appointment",
+                "checkup",
+                "doctor",
+                "follow",
+                "health",
+                "physician",
+                "surgeon",
+            }
+        )
     return {
         token
         for token in significant_tokens(query) - _GENERIC_MATCH_TOKENS - category_tokens

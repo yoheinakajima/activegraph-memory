@@ -132,11 +132,26 @@ result = retrieve_memory(
 - `MemoryEventRecord` rows with predicate, category ids, quantities, temporal refs, event dates, claim id, and source-turn ids
 
 For aggregate and temporal queries, `retrieve_memory` first runs an executable
-graph query over that projection. It can compute counts, sums, and
-chronological evidence rows before packing normal claim/source context. The
-rendered context starts with a `[graph-query: ...]` block when a reducer ran.
-This keeps arithmetic and timeline work deterministic while preserving the raw
-log evidence below it.
+graph query over that projection. It can compute counts, sums, temporal order,
+date deltas, and chronological evidence rows before packing normal
+claim/source context. The rendered context starts with a `[graph-query: ...]`
+block when a reducer ran. High-confidence reducers may render a computed answer
+candidate; low-confidence reducers render evidence rows without making the
+candidate authoritative. This keeps arithmetic and timeline work deterministic
+while preserving the raw log evidence below it.
+
+For relative-date lookup questions, retrieval can render a compact
+`[memory-date-packet]` of user source turns near the resolved target date when
+graph context is weak or unavailable. Query token expansion also bridges common
+generic wording gaps, such as `phone accessories` to device/case/charger terms
+or `business milestone` to launch/sign/client/contract terms.
+
+For advice or recommendation queries, retrieval can also render a compact
+`[memory-observation-packet]` made from source-grounded user preference,
+constraint, and experience claims. For exact recall questions about what the
+assistant previously said, listed, recommended, or provided, retrieval favors
+assistant turns and nearby source turns instead of running aggregate graph
+reducers.
 
 The retriever returns context text plus structured artifacts:
 

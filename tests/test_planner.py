@@ -15,6 +15,7 @@ from activegraph_memory.settings import ActiveGraphMemorySettings
         ("Why did we change the pricing after the calls?", "decision_reconstruction"),
         ("What tone does Yohei prefer for article feedback?", "preference"),
         ("What was true as of July 3?", "temporal"),
+        ("What is the order of the museums I visited from earliest to latest?", "temporal"),
         ("Find where Sarah approved the budget.", "semantic_lookup"),
         ("What is the invoice date?", "lookup"),
     ],

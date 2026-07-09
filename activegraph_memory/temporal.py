@@ -28,6 +28,37 @@ _RELATIVE_AGO_RE = re.compile(
 _EXPLICIT_DATE_RE = re.compile(
     r"\b(?P<year>20\d{2})[-/](?P<month>\d{1,2})[-/](?P<day>\d{1,2})\b"
 )
+_MONTH_NAME_DATE_RE = re.compile(
+    r"\b(?P<month>January|Jan|February|Feb|March|Mar|April|Apr|May|June|Jun|"
+    r"July|Jul|August|Aug|September|Sep|October|Oct|November|Nov|December|Dec)"
+    r"\s+(?P<day>\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(?P<year>20\d{2}))?\b",
+    re.IGNORECASE,
+)
+_MONTHS = {
+    "jan": 1,
+    "january": 1,
+    "feb": 2,
+    "february": 2,
+    "mar": 3,
+    "march": 3,
+    "apr": 4,
+    "april": 4,
+    "may": 5,
+    "jun": 6,
+    "june": 6,
+    "jul": 7,
+    "july": 7,
+    "aug": 8,
+    "august": 8,
+    "sep": 9,
+    "september": 9,
+    "oct": 10,
+    "october": 10,
+    "nov": 11,
+    "november": 11,
+    "dec": 12,
+    "december": 12,
+}
 _WORD_NUMBERS = {
     "one": 1,
     "two": 2,
@@ -209,6 +240,27 @@ def extract_temporal_refs(text: str, *, anchor_time: str | None = None) -> list[
                 anchor_time=anchor_time,
                 resolution_method="explicit",
                 confidence=0.95,
+            )
+        )
+    anchor = _parse_anchor(anchor_time)
+    for match in _MONTH_NAME_DATE_RE.finditer(text):
+        month = _MONTHS.get(match.group("month").lower())
+        if not month:
+            continue
+        year = int(match.group("year") or anchor.year)
+        try:
+            dt = date(year, month, int(match.group("day")))
+        except ValueError:
+            continue
+        refs.append(
+            TemporalRef(
+                text=match.group(0),
+                resolved_start=dt.isoformat(),
+                resolved_end=dt.isoformat(),
+                anchor_time=anchor_time,
+                resolution_method="explicit",
+                confidence=0.9 if match.group("year") else 0.82,
+                metadata={"year_inferred_from_anchor": not bool(match.group("year"))},
             )
         )
     return refs

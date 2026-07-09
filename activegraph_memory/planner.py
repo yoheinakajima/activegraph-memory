@@ -50,6 +50,13 @@ _TEMPORAL_QUANTITY_PATTERNS = (
     r"\bhow many\s+(?:days?|weeks?|months?|years?)\s+did it take\b",
     r"\bhow long\b.*\b(?:ago|since|after|before)\b",
 )
+_TEMPORAL_SEQUENCE_PATTERNS = (
+    r"\border(?:ed|ing)?\b.*\b(?:earliest|latest|first|last|chronological)\b",
+    r"\b(?:earliest|oldest)\s+to\s+(?:latest|newest)\b",
+    r"\b(?:latest|newest)\s+to\s+(?:earliest|oldest)\b",
+    r"\bchronological(?:ly)?\b",
+    r"\btimeline\b",
+)
 _TEMPORAL_PATTERNS = (
     r"\bas of\b",
     r"\bbefore\b",
@@ -62,6 +69,13 @@ _TEMPORAL_PATTERNS = (
     r"\bfor \d+ (day|days|week|weeks|month|months|year|years)\b",
 )
 _PREFERENCE_PATTERNS = (
+    r"\badvice\b",
+    r"\bany tips\b",
+    r"\btips?\b.*\b(better|improve|improving|results)\b",
+    r"\bcan you suggest\b",
+    r"\bsuggest (?:a|an|some|new|better)\b",
+    r"\brecommend (?:a|an|some|new|better)\b",
+    r"\brecommendation\b",
     r"\bprefer\b",
     r"\bprefers\b",
     r"\bpreference\b",
@@ -262,6 +276,8 @@ def infer_query_type(query: str) -> QueryType:
         return "temporal"
     if _matches_any(text, _AGGREGATE_PATTERNS):
         return "aggregate"
+    if _matches_any(text, _TEMPORAL_SEQUENCE_PATTERNS):
+        return "temporal"
     if _matches_any(text, _LATEST_PATTERNS):
         if re.search(r"\bcurrent\b|\bcurrently\b|\bas of now\b", text):
             return "current"

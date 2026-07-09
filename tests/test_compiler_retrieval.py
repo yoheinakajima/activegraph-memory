@@ -168,7 +168,9 @@ def test_past_duration_is_rendered_as_normalized_claim_time():
         token_budget=200,
     )
 
-    assert "for the past three months => 2023-02-26..2023-05-27" in result.context_text
+    assert "Insufficient comparison evidence" in result.context_text
+    assert "Spanish classes" in result.context_text
+    assert "2023-02-26" in result.context_text
 
 
 def test_aggregate_count_uses_compiled_events_before_source_context():
@@ -222,11 +224,12 @@ def test_aggregate_count_uses_compiled_events_before_source_context():
     )
 
     assert result.metadata["requested_token_budget"] == 10000
-    assert result.metadata["token_budget"] == 3200
-    assert result.metadata["adaptive_budget_applied"] is True
+    assert result.metadata["token_budget"] == 10000
+    assert result.metadata["adaptive_budget_applied"] is False
     assert "[memory-answer-packet]" in result.context_text
     assert "[graph-query: aggregate/count]" in result.context_text
-    assert "Computed count: 3" in result.context_text
+    assert "Computed answer candidate withheld" in result.context_text
+    assert "Computed count:" not in result.context_text
     assert result.metadata["graph_query"]["matched_events"] == 3
 
 
@@ -262,7 +265,8 @@ def test_aggregate_count_skips_negated_events():
         question_date="2023/05/30 (Tue)",
     )
 
-    assert "Computed count: 1" in result.context_text
+    assert "Computed answer candidate withheld" in result.context_text
+    assert "Computed count:" not in result.context_text
     graph_events = [row["event"] for row in result.metadata["graph_query"]["evidence_rows"]]
     assert "The user did not buy a fern." not in graph_events
 
@@ -982,7 +986,7 @@ def test_event_timeline_filters_generic_event_category_with_specific_tokens():
         question_date="2023/05/27 (Sat)",
     )
 
-    assert "[graph-query: temporal/timeline]" in result.context_text
+    assert "[graph-query: temporal/order]" in result.context_text
     graph_events = [row["event"] for row in result.metadata["graph_query"]["evidence_rows"]]
     assert graph_events == [
         "The user has been taking Spanish classes for the past three months.",
@@ -1032,7 +1036,8 @@ def test_aggregate_between_window_uses_two_temporal_refs():
         question_date="2023/04/01 (Sat)",
     )
 
-    assert "Computed count: 1" in result.context_text
+    assert "Computed answer candidate withheld" in result.context_text
+    assert "Computed count:" not in result.context_text
     assert result.metadata["graph_query"]["matched_events"] == 1
     assert result.metadata["graph_query"]["evidence_rows"][0]["event"] == "The user bought a fern."
 
@@ -1064,7 +1069,8 @@ def test_graph_query_summary_is_kept_when_rows_exceed_budget():
     )
 
     assert "[graph-query: aggregate/count]" in result.context_text
-    assert "Computed count: 8" in result.context_text
+    assert "Computed answer candidate withheld" in result.context_text
+    assert "Computed count:" not in result.context_text
 
 
 def test_temporal_graph_query_renders_chronological_rows():
@@ -1113,6 +1119,46 @@ def test_temporal_graph_query_renders_chronological_rows():
     second = result.context_text.index("2023-02-10")
     third = result.context_text.index("2023-03-05")
     assert first < second < third
+
+
+def test_temporal_order_query_does_not_treat_order_as_purchase():
+    turns = [
+        _turn("museum1", 0, 0, "user", "I visited the Science Museum today.", "2023-01-15"),
+        _turn("museum2", 1, 0, "user", "I visited the History Museum today.", "2023-02-10"),
+    ]
+    claims = [
+        ExtractedClaimInput(
+            text="The user visited the Science Museum.",
+            session_id="museum1",
+            session_date="2023-01-15",
+            session_idx=0,
+            role="user",
+            mentioned_turn_idxs=(0,),
+        ),
+        ExtractedClaimInput(
+            text="The user visited the History Museum.",
+            session_id="museum2",
+            session_date="2023-02-10",
+            session_idx=1,
+            role="user",
+            mentioned_turn_idxs=(0,),
+        ),
+    ]
+    index = compile_memory_index(turns=turns, claims=claims)
+
+    result = retrieve_memory(
+        index,
+        "What is the order of the museums I visited from earliest to latest?",
+        query_id="museum-order",
+        question_date="2023/03/01 (Wed)",
+        token_budget=400,
+    )
+
+    graph = result.metadata["graph_query"]
+    assert graph["operation"] == "temporal/timeline"
+    assert graph["matched_events"] == 2
+    assert "Science Museum" in result.context_text
+    assert "History Museum" in result.context_text
 
 
 def test_personal_luxury_sum_uses_concept_matches_and_ignores_assistant_budgets():
@@ -1222,7 +1268,8 @@ def test_personal_wedding_count_prefers_user_events_and_treats_got_back_as_atten
         token_budget=300,
     )
 
-    assert "Computed count: 3" in result.context_text
+    assert "Computed answer candidate withheld" in result.context_text
+    assert "Computed count:" not in result.context_text
     assert "assistant suggested" not in result.context_text.lower()
 
 
@@ -1300,3 +1347,317 @@ def test_birth_count_dedupes_named_babies_and_excludes_assistant_fiction():
     assert graph["count_method"] == "named_entity_count"
     assert graph["entity_names"] == ["Max", "Charlotte", "Ava", "Lily", "Jasper"]
     assert "Rey and Kylo Ren" not in result.context_text
+
+
+def test_month_name_dates_support_temporal_order_with_arrival_over_preorder():
+    turns = [
+        _turn(
+            "device1",
+            0,
+            0,
+            "user",
+            "I got my Samsung Galaxy S22 from Best Buy on February 20th.",
+            "2023-03-15",
+        ),
+        _turn(
+            "device2",
+            1,
+            0,
+            "user",
+            "I pre-ordered the Dell XPS 13 on January 28th and it arrived on February 25th.",
+            "2023-03-15",
+        ),
+    ]
+    claims = [
+        ExtractedClaimInput(
+            text="The user got their Samsung Galaxy S22 from Best Buy on February 20th.",
+            session_id="device1",
+            session_date="2023-03-15",
+            session_idx=0,
+            role="user",
+            mentioned_turn_idxs=(0,),
+        ),
+        ExtractedClaimInput(
+            text="The user pre-ordered the Dell XPS 13 on January 28th and it arrived on February 25th.",
+            session_id="device2",
+            session_date="2023-03-15",
+            session_idx=1,
+            role="user",
+            mentioned_turn_idxs=(0,),
+        ),
+    ]
+    index = compile_memory_index(turns=turns, claims=claims)
+
+    result = retrieve_memory(
+        index,
+        "Which device did I get first, the Samsung Galaxy S22 or the Dell XPS 13?",
+        query_id="device-order",
+        question_date="2023/03/15 (Wed)",
+    )
+
+    assert "[graph-query: temporal/order]" in result.context_text
+    assert "First: Samsung Galaxy S22" in result.context_text
+    assert result.metadata["graph_query"]["comparison_complete"] is True
+
+
+def test_temporal_order_reports_missing_comparison_operand():
+    turns = [
+        _turn("parent1", 0, 0, "user", "My cousin Alex adopted a baby girl in January.", "2023-03-17"),
+    ]
+    claims = [
+        ExtractedClaimInput(
+            text="The user's cousin Alex adopted a baby girl on January 10th.",
+            session_id="parent1",
+            session_date="2023-03-17",
+            session_idx=0,
+            role="user",
+            mentioned_turn_idxs=(0,),
+        )
+    ]
+    index = compile_memory_index(turns=turns, claims=claims)
+
+    result = retrieve_memory(
+        index,
+        "Who became a parent first, Tom or Alex?",
+        query_id="missing-parent-comparison",
+        question_date="2023/03/17 (Fri)",
+    )
+
+    assert "Insufficient comparison evidence" in result.context_text
+    assert "not for Tom" in result.context_text
+    assert result.metadata["graph_query"]["comparison_complete"] is False
+
+
+def test_exact_assistant_recall_skips_aggregate_graph_and_expands_neighbors():
+    turns = [
+        _turn("recipe1", 0, 0, "user", "Can you walk me through making a classic French omelette?", "2023-05-21"),
+        _turn(
+            "recipe1",
+            0,
+            1,
+            "assistant",
+            "Ingredients: 2-3 eggs, a pinch of salt, butter, and herbs if you like.",
+            "2023-05-21",
+        ),
+        _turn("recipe1", 0, 2, "user", "Great, thanks.", "2023-05-21"),
+    ]
+    claims = [
+        ExtractedClaimInput(
+            text="The assistant said a classic French omelette needs 2-3 eggs.",
+            session_id="recipe1",
+            session_date="2023-05-21",
+            session_idx=0,
+            role="assistant",
+            mentioned_turn_idxs=(1,),
+        )
+    ]
+    index = compile_memory_index(turns=turns, claims=claims)
+
+    result = retrieve_memory(
+        index,
+        "How many eggs did you say we need for the classic French omelette recipe?",
+        query_id="assistant-recipe-recall",
+        question_date="2023/05/21 (Sun)",
+        token_budget=300,
+    )
+
+    assert result.metadata["graph_query"] is None
+    assert "2-3 eggs" in result.context_text
+    assert "classic French omelette" in result.context_text
+    assert "recipe1#0" in result.selected_turn_ids
+    assert "recipe1#1" in result.selected_turn_ids
+
+
+def test_preference_advice_queries_render_compact_observation_packet():
+    turns = [
+        _turn(
+            "evening1",
+            0,
+            0,
+            "user",
+            "I prefer winding down by 9:30 pm and I don't want phone or TV suggestions because they hurt my sleep quality.",
+            "2023-05-30",
+        )
+    ]
+    claims = [
+        ExtractedClaimInput(
+            text="The user prefers winding down by 9:30 pm and does not want phone or TV suggestions because they hurt sleep quality.",
+            session_id="evening1",
+            session_date="2023-05-30",
+            session_idx=0,
+            role="user",
+            mentioned_turn_idxs=(0,),
+        )
+    ]
+    index = compile_memory_index(turns=turns, claims=claims)
+
+    result = retrieve_memory(
+        index,
+        "Can you suggest some activities that I can do in the evening?",
+        query_id="evening-advice",
+        question_date="2023/05/30 (Tue)",
+        token_budget=300,
+    )
+
+    assert "[memory-observation-packet]" in result.context_text
+    assert "constraint" in result.context_text
+    assert "phone or TV" in result.context_text
+    assert result.metadata["observation_context_rendered"] is True
+
+
+def test_low_confidence_event_count_renders_rows_without_answer_candidate():
+    turns = [
+        _turn("appt1", 0, 0, "user", "I went to Dr. Smith on March 3rd.", "2023-03-27"),
+        _turn("appt2", 1, 0, "user", "I had a follow-up with Dr. Thompson on March 20th.", "2023-03-27"),
+    ]
+    claims = [
+        ExtractedClaimInput(
+            text="The user went to Dr. Smith on March 3rd.",
+            session_id="appt1",
+            session_date="2023-03-27",
+            session_idx=0,
+            role="user",
+            mentioned_turn_idxs=(0,),
+        ),
+        ExtractedClaimInput(
+            text="The user had a follow-up with Dr. Thompson on March 20th.",
+            session_id="appt2",
+            session_date="2023-03-27",
+            session_idx=1,
+            role="user",
+            mentioned_turn_idxs=(0,),
+        ),
+    ]
+    index = compile_memory_index(turns=turns, claims=claims)
+
+    result = retrieve_memory(
+        index,
+        "How many doctor's appointments did I go to in March?",
+        query_id="doctor-count-evidence",
+        question_date="2023/03/27 (Mon)",
+        token_budget=300,
+    )
+
+    assert "[graph-query: aggregate/count]" in result.context_text
+    assert "Computed answer candidate withheld" in result.context_text
+    assert "Computed count:" not in result.context_text
+    assert result.metadata["graph_answer_candidate_rendered"] is False
+
+
+def test_phone_accessory_query_expands_to_device_specific_source_turns():
+    turns = [
+        _turn(
+            "phone1",
+            0,
+            0,
+            "user",
+            "I need a new screen protector for my iPhone 13 Pro.",
+            "2023-05-27",
+        ),
+        _turn(
+            "kitchen1",
+            1,
+            0,
+            "user",
+            "I bought kitchen accessories for my pantry.",
+            "2023-05-27",
+        ),
+    ]
+    claims = [
+        ExtractedClaimInput(
+            text="The user needs a new screen protector for their iPhone 13 Pro.",
+            session_id="phone1",
+            session_date="2023-05-27",
+            session_idx=0,
+            role="user",
+            mentioned_turn_idxs=(0,),
+        ),
+        ExtractedClaimInput(
+            text="The user bought kitchen accessories for their pantry.",
+            session_id="kitchen1",
+            session_date="2023-05-27",
+            session_idx=1,
+            role="user",
+            mentioned_turn_idxs=(0,),
+        ),
+    ]
+    index = compile_memory_index(turns=turns, claims=claims)
+
+    result = retrieve_memory(
+        index,
+        "Can you suggest some useful accessories for my phone?",
+        query_id="phone-accessories",
+        question_date="2023/05/30 (Tue)",
+        token_budget=220,
+    )
+
+    assert "iPhone 13 Pro" in result.context_text
+    assert "screen protector" in result.context_text
+
+
+def test_relative_date_lookup_renders_near_date_milestone_source_packet():
+    turns = [
+        _turn(
+            "biz1",
+            0,
+            0,
+            "user",
+            "Which industries are growing fastest for small businesses?",
+            "2023-03-01",
+        ),
+        _turn(
+            "biz2",
+            1,
+            0,
+            "user",
+            "I signed a contract with my first client today.",
+            "2023-03-01",
+        ),
+        _turn(
+            "other1",
+            2,
+            0,
+            "user",
+            "I bought a plant for the office.",
+            "2023-03-08",
+        ),
+    ]
+    claims = [
+        ExtractedClaimInput(
+            text="The user asked about industries growing fastest for small businesses.",
+            session_id="biz1",
+            session_date="2023-03-01",
+            session_idx=0,
+            role="user",
+            mentioned_turn_idxs=(0,),
+        ),
+        ExtractedClaimInput(
+            text="The user signed a contract with their first client.",
+            session_id="biz2",
+            session_date="2023-03-01",
+            session_idx=1,
+            role="user",
+            mentioned_turn_idxs=(0,),
+        ),
+        ExtractedClaimInput(
+            text="The user bought a plant for the office.",
+            session_id="other1",
+            session_date="2023-03-08",
+            session_idx=2,
+            role="user",
+            mentioned_turn_idxs=(0,),
+        ),
+    ]
+    index = compile_memory_index(turns=turns, claims=claims)
+
+    result = retrieve_memory(
+        index,
+        "What was the significant buisiness milestone I mentioned four weeks ago?",
+        query_id="business-milestone",
+        question_date="2023/03/29 (Wed)",
+        token_budget=260,
+    )
+
+    assert "[memory-date-packet]" in result.context_text
+    assert "signed a contract with my first client" in result.context_text
+    assert result.metadata["temporal_target_context_rendered"] is True
