@@ -94,6 +94,14 @@ def test_relative_ago_resolves_against_slash_date_anchor():
     assert ref.resolution_method == "relative_to_query"
 
 
+def test_relative_ago_out_of_range_is_unresolved():
+    ref = resolve_relative_ago("10000 years ago", anchor_time="2023/03/25 (Sat)")
+
+    assert ref.resolution_method == "unresolved"
+    assert ref.resolved_start is None
+    assert ref.metadata["reason"] == "relative_date_out_of_range"
+
+
 def test_past_duration_is_rendered_as_normalized_claim_time():
     turns = [
         _turn("s1", 0, 0, "user", "I have been taking Spanish classes for the past three months.", "2023-05-27"),

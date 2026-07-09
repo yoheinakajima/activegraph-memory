@@ -67,6 +67,39 @@ def detect_relative_duration(text: str) -> bool:
     return bool(_DURATION_RE.search(text) or _PAST_DURATION_RE.search(text))
 
 
+def _delta_for_count_unit(count: int, unit: str) -> timedelta | None:
+    try:
+        if unit.startswith("day"):
+            return timedelta(days=count)
+        if unit.startswith("week"):
+            return timedelta(weeks=count)
+        if unit.startswith("month"):
+            return timedelta(days=30 * count)
+        return timedelta(days=365 * count)
+    except OverflowError:
+        return None
+
+
+def _unresolved_out_of_range(
+    text: str,
+    *,
+    anchor: date,
+    count: int,
+    unit: str,
+) -> TemporalRef:
+    return TemporalRef(
+        text=text,
+        anchor_time=anchor.isoformat(),
+        resolution_method="unresolved",
+        confidence=0.0,
+        metadata={
+            "count": count,
+            "unit": unit,
+            "reason": "relative_date_out_of_range",
+        },
+    )
+
+
 def resolve_relative_duration(text: str, *, anchor_time: str | None = None) -> TemporalRef:
     """Resolve a simple duration phrase into an approximate start date."""
 
@@ -83,16 +116,18 @@ def resolve_relative_duration(text: str, *, anchor_time: str | None = None) -> T
     count = int(raw_count) if raw_count.isdigit() else _WORD_NUMBERS.get(raw_count, 0)
     unit = match.group("unit").lower()
     anchor = _parse_anchor(anchor_time)
-    if unit.startswith("day"):
-        delta = timedelta(days=count)
-    elif unit.startswith("week"):
-        delta = timedelta(weeks=count)
-    elif unit.startswith("month"):
-        delta = timedelta(days=30 * count)
-    else:
-        delta = timedelta(days=365 * count)
+    delta = _delta_for_count_unit(count, unit)
+    if delta is None:
+        return _unresolved_out_of_range(
+            match.group(0), anchor=anchor, count=count, unit=unit
+        )
 
-    start = anchor - delta
+    try:
+        start = anchor - delta
+    except OverflowError:
+        return _unresolved_out_of_range(
+            match.group(0), anchor=anchor, count=count, unit=unit
+        )
     return TemporalRef(
         text=match.group(0),
         resolved_start=start.isoformat(),
@@ -124,15 +159,17 @@ def resolve_relative_ago(text: str, *, anchor_time: str | None = None) -> Tempor
     count = int(raw_count) if raw_count.isdigit() else _WORD_NUMBERS.get(raw_count, 0)
     unit = match.group("unit").lower()
     anchor = _parse_anchor(anchor_time)
-    if unit.startswith("day"):
-        delta = timedelta(days=count)
-    elif unit.startswith("week"):
-        delta = timedelta(weeks=count)
-    elif unit.startswith("month"):
-        delta = timedelta(days=30 * count)
-    else:
-        delta = timedelta(days=365 * count)
-    target = anchor - delta
+    delta = _delta_for_count_unit(count, unit)
+    if delta is None:
+        return _unresolved_out_of_range(
+            match.group(0), anchor=anchor, count=count, unit=unit
+        )
+    try:
+        target = anchor - delta
+    except OverflowError:
+        return _unresolved_out_of_range(
+            match.group(0), anchor=anchor, count=count, unit=unit
+        )
     return TemporalRef(
         text=match.group(0),
         resolved_start=target.isoformat(),
