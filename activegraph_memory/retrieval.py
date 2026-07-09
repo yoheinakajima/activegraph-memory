@@ -151,13 +151,21 @@ def retrieve_memory(
         return True
 
     if graph_result is not None and graph_result.answer_hint:
-        rendered_graph = graph_result.render()
-        graph_cost = token_counter(rendered_graph) + 2
-        if fits(graph_cost):
-            graph_context = rendered_graph
-            add_cost(graph_cost)
+        for max_rows in (24, 12, 6, 0):
+            rendered_graph = graph_result.render(max_rows=max_rows)
+            graph_cost = token_counter(rendered_graph) + 2
+            if fits(graph_cost):
+                graph_context = rendered_graph
+                add_cost(graph_cost)
+                break
         else:
-            truncated = True
+            minimal_graph = f"[graph-query: {graph_result.operation}]\n{graph_result.answer_hint}"
+            graph_cost = token_counter(minimal_graph) + 2
+            if fits(graph_cost):
+                graph_context = minimal_graph
+                add_cost(graph_cost)
+            else:
+                truncated = True
         for claim_id in graph_result.selected_claim_ids:
             record = index.by_claim_id.get(claim_id)
             if record is not None:

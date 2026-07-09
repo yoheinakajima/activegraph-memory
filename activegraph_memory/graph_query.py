@@ -30,6 +30,7 @@ _TIMELINE_QUERY_RE = re.compile(
     r"\b(first|earliest|latest|order|ordered|timeline|history|chronological|when)\b",
     re.IGNORECASE,
 )
+_AUXILIARY_CATEGORIES = {"expense"}
 _MONTHS = {
     "january": 1,
     "jan": 1,
@@ -148,7 +149,8 @@ def run_graph_query(
         return None
 
     operation = _infer_operation(query, query_type=query_type)
-    query_categories = infer_category_ids(query)
+    inferred_categories = infer_category_ids(query)
+    query_categories = _required_query_categories(inferred_categories)
     query_predicate = infer_predicate(query)
     time_window = infer_query_time_window(query, anchor_time=anchor_time)
     matched = _matching_events(
@@ -166,6 +168,7 @@ def run_graph_query(
             matched,
             query=query,
             query_categories=query_categories,
+            inferred_categories=inferred_categories,
             query_predicate=query_predicate,
             time_window=time_window,
         )
@@ -175,6 +178,7 @@ def run_graph_query(
             matched,
             query=query,
             query_categories=query_categories,
+            inferred_categories=inferred_categories,
             query_predicate=query_predicate,
             time_window=time_window,
         )
@@ -182,6 +186,7 @@ def run_graph_query(
         index,
         matched,
         query_categories=query_categories,
+        inferred_categories=inferred_categories,
         query_predicate=query_predicate,
         time_window=time_window,
     )
@@ -221,6 +226,16 @@ def infer_query_time_window(query: str, *, anchor_time: str | None = None) -> Qu
             )
 
     refs = extract_temporal_refs(query, anchor_time=anchor_time)
+    if len(refs) >= 2 and re.search(r"\bbetween\b|\bfrom\b", lower):
+        dates = [
+            parsed
+            for ref in refs[:2]
+            for parsed in (_parse_date(ref.resolved_start or ref.resolved_end),)
+            if parsed is not None
+        ]
+        if len(dates) == 2:
+            start, end = sorted(dates)
+            return QueryTimeWindow(start=start, end=end, label=_window_label(start, end))
     if refs:
         ref = refs[0]
         start = _parse_date(ref.resolved_start)
@@ -265,6 +280,8 @@ def _matching_events(
     for event in index.events:
         if event.metadata.get("claim_status") == "superseded":
             continue
+        if event.metadata.get("polarity") == "negative":
+            continue
         if query_categories and not all(category in event.category_ids for category in query_categories):
             continue
         if query_predicate != "state" and not predicates_compatible(query_predicate, event.predicate):
@@ -297,6 +314,7 @@ def _count_result(
     *,
     query: str,
     query_categories: tuple[str, ...],
+    inferred_categories: tuple[str, ...],
     query_predicate: str,
     time_window: QueryTimeWindow,
 ) -> GraphQueryResult:
@@ -316,6 +334,7 @@ def _count_result(
         operation="aggregate/count",
         answer_hint=answer,
         query_categories=query_categories,
+        inferred_categories=inferred_categories,
         query_predicate=query_predicate,
         time_window=time_window,
         metadata=metadata,
@@ -328,6 +347,7 @@ def _sum_result(
     *,
     query: str,
     query_categories: tuple[str, ...],
+    inferred_categories: tuple[str, ...],
     query_predicate: str,
     time_window: QueryTimeWindow,
 ) -> GraphQueryResult:
@@ -344,13 +364,17 @@ def _sum_result(
             total += float(quantity.value)
             values.append(float(quantity.value))
     unit_label = unit or "quantity"
-    answer = f"Computed sum: {_format_quantity_value(total, unit_label)}"
+    if values:
+        answer = f"Computed sum: {_format_quantity_value(total, unit_label)}"
+    else:
+        answer = "No matching quantity values found for sum."
     return _result(
         index,
         events,
         operation="aggregate/sum",
         answer_hint=answer,
         query_categories=query_categories,
+        inferred_categories=inferred_categories,
         query_predicate=query_predicate,
         time_window=time_window,
         unit=unit_label,
@@ -363,6 +387,7 @@ def _timeline_result(
     events: list[MemoryEventRecord],
     *,
     query_categories: tuple[str, ...],
+    inferred_categories: tuple[str, ...],
     query_predicate: str,
     time_window: QueryTimeWindow,
 ) -> GraphQueryResult:
@@ -377,6 +402,7 @@ def _timeline_result(
         operation="temporal/timeline",
         answer_hint=answer,
         query_categories=query_categories,
+        inferred_categories=inferred_categories,
         query_predicate=query_predicate,
         time_window=time_window,
     )
@@ -389,6 +415,7 @@ def _result(
     operation: str,
     answer_hint: str,
     query_categories: tuple[str, ...],
+    inferred_categories: tuple[str, ...],
     query_predicate: str,
     time_window: QueryTimeWindow,
     unit: str | None = None,
@@ -403,6 +430,7 @@ def _result(
     )
     filter_metadata: dict[str, Any] = {
         "categories": [category_label(category_id) for category_id in query_categories],
+        "inferred_categories": [category_label(category_id) for category_id in inferred_categories],
         "predicate": query_predicate if query_predicate != "state" else "",
         "time_window": time_window.label,
     }
@@ -450,6 +478,17 @@ def _event_match_text(index: MemoryIndex, event: MemoryEventRecord) -> str:
     )
     category_text = " ".join(category_label(category_id) for category_id in event.category_ids)
     return f"{event.text} {event.predicate} {entity_text} {category_text}"
+
+
+def _required_query_categories(category_ids: tuple[str, ...]) -> tuple[str, ...]:
+    if len(category_ids) <= 1:
+        return category_ids
+    required = tuple(
+        category_id
+        for category_id in category_ids
+        if category_id not in _AUXILIARY_CATEGORIES
+    )
+    return required or category_ids
 
 
 def _count_quantity_values(

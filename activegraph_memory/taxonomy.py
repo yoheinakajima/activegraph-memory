@@ -6,6 +6,13 @@ import re
 
 
 _WORD_RE = re.compile(r"[a-z0-9]+")
+_NEGATED_EVENT_RE = re.compile(
+    r"\b(?:did not|didn't|do not|don't|never|not|no)\s+"
+    r"(?:buy|bought|purchase|purchased|order|ordered|pay|paid|spend|spent|"
+    r"acquire|acquired|get|got|receive|received|attend|attended|visit|visited|"
+    r"go|went|schedule|scheduled|book|booked|donate|donated)\b",
+    re.IGNORECASE,
+)
 
 _CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
     "art": ("art", "gallery", "painting", "museum", "exhibit", "mural", "studio"),
@@ -98,17 +105,7 @@ def infer_category_ids(text: str) -> tuple[str, ...]:
     out: list[str] = []
     for category_id, keywords in _CATEGORY_KEYWORDS.items():
         for keyword in keywords:
-            if " " in keyword:
-                if keyword in lower:
-                    out.append(category_id)
-                    break
-                continue
-            if not keyword.isalnum():
-                if keyword in lower:
-                    out.append(category_id)
-                    break
-                continue
-            if normalize_token(keyword) in tokens:
+            if _contains_keyword(lower, tokens, keyword):
                 out.append(category_id)
                 break
     return tuple(out)
@@ -124,10 +121,19 @@ def infer_predicate(text: str) -> str:
     """Infer a coarse event predicate from text."""
 
     lower = f" {text.lower()} "
+    tokens = significant_tokens(text)
     for predicate, patterns in _PREDICATE_PATTERNS:
-        if any(pattern in lower for pattern in patterns):
+        if any(_contains_keyword(lower, tokens, pattern) for pattern in patterns):
             return predicate
     return "state"
+
+
+def infer_polarity(text: str) -> str:
+    """Infer whether an event-like claim is affirmative or negated."""
+
+    if _NEGATED_EVENT_RE.search(text):
+        return "negative"
+    return "affirmative"
 
 
 def predicates_compatible(query_predicate: str, event_predicate: str) -> bool:
@@ -141,3 +147,12 @@ def predicates_compatible(query_predicate: str, event_predicate: str) -> bool:
         if query_predicate in group and event_predicate in group:
             return True
     return False
+
+
+def _contains_keyword(lower_text: str, tokens: set[str], keyword: str) -> bool:
+    if " " in keyword:
+        pattern = r"\b" + r"\s+".join(re.escape(part) for part in keyword.lower().split()) + r"\b"
+        return bool(re.search(pattern, lower_text))
+    if not keyword.isalnum():
+        return keyword in lower_text
+    return normalize_token(keyword) in tokens

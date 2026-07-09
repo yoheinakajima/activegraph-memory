@@ -47,6 +47,31 @@ def test_compile_memory_index_resolves_claim_anchors_and_quantities():
     assert index.events[0].predicate == "purchase"
 
 
+def test_compile_memory_index_extracts_commas_word_quantities_and_loose_dates():
+    turns = [
+        _turn("q1", 0, 0, "user", "I donated $1,200 and bought three plants.", "2023-5-2"),
+    ]
+    claims = [
+        ExtractedClaimInput(
+            text="The user donated $1,200 and bought three plants.",
+            session_id="q1",
+            session_date="2023-5-2",
+            session_idx=0,
+            role="user",
+            mentioned_turn_idxs=(0,),
+        )
+    ]
+
+    index = compile_memory_index(turns=turns, claims=claims)
+    quantities = index.claims[0].quantity_claims
+
+    assert index.claims[0].claim.valid_from == "2023-05-02"
+    assert quantities[0].value == 1200
+    assert quantities[0].unit == "usd"
+    assert quantities[1].value == 3
+    assert quantities[1].unit == "plants"
+
+
 def test_retrieve_memory_anchors_claim_above_source_turn():
     turns = [
         _turn("s1", 0, 0, "user", "I bought a smoker today."),
@@ -187,6 +212,43 @@ def test_aggregate_count_uses_compiled_events_before_source_context():
     assert result.metadata["graph_query"]["matched_events"] == 3
 
 
+def test_aggregate_count_skips_negated_events():
+    turns = [
+        _turn("n1", 0, 0, "user", "I bought a snake plant today.", "2023-05-02"),
+        _turn("n2", 1, 0, "user", "I did not buy a fern today.", "2023-05-10"),
+    ]
+    claims = [
+        ExtractedClaimInput(
+            text="The user bought a snake plant.",
+            session_id="n1",
+            session_date="2023-05-02",
+            session_idx=0,
+            role="user",
+            mentioned_turn_idxs=(0,),
+        ),
+        ExtractedClaimInput(
+            text="The user did not buy a fern.",
+            session_id="n2",
+            session_date="2023-05-10",
+            session_idx=1,
+            role="user",
+            mentioned_turn_idxs=(0,),
+        ),
+    ]
+    index = compile_memory_index(turns=turns, claims=claims)
+
+    result = retrieve_memory(
+        index,
+        "How many plants did I buy in May?",
+        query_id="negated-plants",
+        question_date="2023/05/30 (Tue)",
+    )
+
+    assert "Computed count: 1" in result.context_text
+    graph_events = [row["event"] for row in result.metadata["graph_query"]["evidence_rows"]]
+    assert "The user did not buy a fern." not in graph_events
+
+
 def test_aggregate_sum_uses_quantity_claims_and_category_filters():
     turns = [
         _turn("b1", 0, 0, "user", "I bought a bike helmet for $80.", "2023-01-12"),
@@ -242,6 +304,109 @@ def test_aggregate_sum_uses_quantity_claims_and_category_filters():
     assert result.metadata["graph_query"]["matched_events"] == 3
     graph_events = [row["event"] for row in result.metadata["graph_query"]["evidence_rows"]]
     assert "The user bought coffee for $10." not in graph_events
+
+
+def test_aggregate_sum_does_not_report_zero_when_quantities_are_missing():
+    turns = [
+        _turn("sq1", 0, 0, "user", "The bike repair cost more than expected.", "2023-02-20"),
+    ]
+    claims = [
+        ExtractedClaimInput(
+            text="The user's bike repair cost more than expected.",
+            session_id="sq1",
+            session_date="2023-02-20",
+            session_idx=0,
+            role="user",
+            mentioned_turn_idxs=(0,),
+        ),
+    ]
+    index = compile_memory_index(turns=turns, claims=claims)
+
+    result = retrieve_memory(
+        index,
+        "How much total money have I spent on bike expenses this year?",
+        query_id="missing-quantity",
+        question_date="2023/05/05 (Fri)",
+    )
+
+    assert "No matching quantity values found for sum." in result.context_text
+    assert "Computed sum: $0" not in result.context_text
+
+
+def test_aggregate_between_window_uses_two_temporal_refs():
+    turns = [
+        _turn("bw1", 0, 0, "user", "I bought a snake plant.", "2023-01-15"),
+        _turn("bw2", 1, 0, "user", "I bought a fern.", "2023-02-10"),
+        _turn("bw3", 2, 0, "user", "I bought a pothos.", "2023-03-15"),
+    ]
+    claims = [
+        ExtractedClaimInput(
+            text="The user bought a snake plant.",
+            session_id="bw1",
+            session_date="2023-01-15",
+            session_idx=0,
+            role="user",
+            mentioned_turn_idxs=(0,),
+        ),
+        ExtractedClaimInput(
+            text="The user bought a fern.",
+            session_id="bw2",
+            session_date="2023-02-10",
+            session_idx=1,
+            role="user",
+            mentioned_turn_idxs=(0,),
+        ),
+        ExtractedClaimInput(
+            text="The user bought a pothos.",
+            session_id="bw3",
+            session_date="2023-03-15",
+            session_idx=2,
+            role="user",
+            mentioned_turn_idxs=(0,),
+        ),
+    ]
+    index = compile_memory_index(turns=turns, claims=claims)
+
+    result = retrieve_memory(
+        index,
+        "How many plants did I buy between 2023-02-01 and 2023-02-28?",
+        query_id="plant-window",
+        question_date="2023/04/01 (Sat)",
+    )
+
+    assert "Computed count: 1" in result.context_text
+    assert result.metadata["graph_query"]["matched_events"] == 1
+    assert result.metadata["graph_query"]["evidence_rows"][0]["event"] == "The user bought a fern."
+
+
+def test_graph_query_summary_is_kept_when_rows_exceed_budget():
+    turns = [
+        _turn(f"tg{i}", i, 0, "user", f"I bought plant number {i}.", f"2023-05-{i + 1:02d}")
+        for i in range(8)
+    ]
+    claims = [
+        ExtractedClaimInput(
+            text=f"The user bought plant number {i}.",
+            session_id=f"tg{i}",
+            session_date=f"2023-05-{i + 1:02d}",
+            session_idx=i,
+            role="user",
+            mentioned_turn_idxs=(0,),
+        )
+        for i in range(8)
+    ]
+    index = compile_memory_index(turns=turns, claims=claims)
+
+    result = retrieve_memory(
+        index,
+        "How many plants did I buy in May?",
+        query_id="tight-graph",
+        question_date="2023/05/30 (Tue)",
+        token_budget=35,
+    )
+
+    assert "[graph-query: aggregate/count]" in result.context_text
+    assert "Computed count: 8" in result.context_text
 
 
 def test_temporal_graph_query_renders_chronological_rows():

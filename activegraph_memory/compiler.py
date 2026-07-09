@@ -15,15 +15,23 @@ from typing import Any, Iterable
 
 from .constants import AuthorityLevel, ClaimKind
 from .object_types import MemoryClaim, QuantityClaim, TemporalRef
-from .taxonomy import category_label, infer_category_ids, infer_predicate
+from .taxonomy import category_label, infer_category_ids, infer_polarity, infer_predicate
 from .temporal import extract_temporal_refs
 
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
 _QUANTITY_RE = re.compile(
-    r"(?P<prefix>\$)?(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>%|percent|dollars?|usd|"
+    r"(?P<prefix>\$)?(?P<value>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
+    r"\s*(?P<unit>%|percent|dollars?|usd|"
     r"pages?|days?|weeks?|months?|years?|hours?|minutes?|ounces?|oz|cups?|"
     r"plants?|stories?|babies?|weddings?|museums?|doctors?)?",
+    re.IGNORECASE,
+)
+_WORD_QUANTITY_RE = re.compile(
+    r"\b(?P<value>one|two|three|four|five|six|seven|eight|nine|ten|eleven|"
+    r"twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|"
+    r"twenty)\s+(?P<unit>pages?|days?|weeks?|months?|years?|hours?|minutes?|"
+    r"ounces?|oz|cups?|plants?|stories?|babies?|weddings?|museums?|doctors?)\b",
     re.IGNORECASE,
 )
 
@@ -69,6 +77,28 @@ _STOPWORDS = {
     "with",
     "you",
     "your",
+}
+_WORD_NUMBERS = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+    "thirteen": 13,
+    "fourteen": 14,
+    "fifteen": 15,
+    "sixteen": 16,
+    "seventeen": 17,
+    "eighteen": 18,
+    "nineteen": 19,
+    "twenty": 20,
 }
 
 
@@ -367,6 +397,7 @@ def _compile_event_projection(
                     "dedupe_key": dedupe_key,
                     "topic_key": record.topic_key,
                     "claim_status": record.claim.status,
+                    "polarity": infer_polarity(record.text),
                 },
             )
         )
@@ -496,7 +527,7 @@ def extract_quantity_claims(text: str) -> list[QuantityClaim]:
         raw_unit = match.group("unit")
         prefix = match.group("prefix")
         unit = "usd" if prefix == "$" else (raw_unit.lower() if raw_unit else None)
-        value = float(match.group("value"))
+        value = float(match.group("value").replace(",", ""))
         key = (value, unit)
         if key in seen:
             continue
@@ -509,6 +540,25 @@ def extract_quantity_claims(text: str) -> list[QuantityClaim]:
                 exactness="exact",
                 source_text=match.group(0),
                 confidence=0.8,
+            )
+        )
+    for match in _WORD_QUANTITY_RE.finditer(text):
+        raw_value = match.group("value").lower()
+        raw_unit = match.group("unit")
+        value = float(_WORD_NUMBERS[raw_value])
+        unit = raw_unit.lower() if raw_unit else None
+        key = (value, unit)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(
+            QuantityClaim(
+                property_name="quantity",
+                value=value,
+                unit=unit,
+                exactness="exact",
+                source_text=match.group(0),
+                confidence=0.78,
             )
         )
     return out
@@ -561,6 +611,8 @@ def _mark_supersession(records: list[MemoryClaimRecord]) -> None:
             if older.text == newer.text:
                 older.supports.append(newer.claim_id)
                 continue
+            if _distinct_event_pair(older, newer):
+                continue
             older.superseded_by = newer.claim_id
             older.claim = older.claim.model_copy(
                 update={
@@ -574,6 +626,16 @@ def _mark_supersession(records: list[MemoryClaimRecord]) -> None:
             )
 
 
+def _distinct_event_pair(older: MemoryClaimRecord, newer: MemoryClaimRecord) -> bool:
+    """Return True when similar claims should remain separate event rows."""
+
+    if older.sort_key[0] == newer.sort_key[0]:
+        return False
+    older_predicate = infer_predicate(older.text)
+    newer_predicate = infer_predicate(newer.text)
+    return older_predicate != "state" and newer_predicate != "state"
+
+
 def _subject_for_role(role: str) -> str:
     if role == "assistant":
         return "assistant"
@@ -585,10 +647,14 @@ def _subject_for_role(role: str) -> str:
 def _date_prefix(value: str | None) -> str | None:
     if not value:
         return None
-    match = re.search(r"\d{4}[-/]\d{2}[-/]\d{2}", value)
+    match = re.search(r"(?P<year>\d{4})[-/](?P<month>\d{1,2})[-/](?P<day>\d{1,2})", value)
     if not match:
         return None
-    return match.group(0).replace("/", "-")
+    return (
+        f"{int(match.group('year')):04d}-"
+        f"{int(match.group('month')):02d}-"
+        f"{int(match.group('day')):02d}"
+    )
 
 
 def _normalize_topic_token(token: str) -> str:
