@@ -118,10 +118,13 @@ Every switch is enforced by `MemoryRuntime`; none is documentation-only.
 `MemoryRuntime.retrieve()` may prepend a `[compiled-memory: ...]` proof packet.
 Consumers should preserve its labels when passing context to an answer model:
 
-- `Verified candidate` is a deterministic result over the packet's cited rows.
-  Use it unless a cited raw source contradicts it.
-- `Tentative candidate` is a ranking aid and must be checked against the rows
-  and raw sources.
+- `Proof-complete candidate` means the executor found every required evidence
+  field. It does not certify semantic answer correctness.
+- `Incomplete candidate` is a ranking aid with known missing proof
+  requirements.
+- Every candidate must be checked against cited rows and raw sources. Callers
+  may adopt stronger trust policies only after calibrating each operator on
+  representative data.
 - `temporal_distance_days` is an accepted distance under the query's explicit
   tolerance. For approximate relative-time language, semantic fit inside that
   tolerance outranks calendar-day equality by itself.

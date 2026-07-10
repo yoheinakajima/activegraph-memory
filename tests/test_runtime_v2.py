@@ -195,6 +195,8 @@ def test_luxury_sum_uses_specific_category_instead_of_all_clothing():
     result = MemoryRuntime("fast").retrieve(index, "How much did I spend on luxury items?")
 
     assert result.metadata["compiled_evidence"]["candidate_answer"] == "$2500"
+    assert "Proof-complete candidate" in result.context_text
+    assert "Verified candidate" not in result.context_text
 
 
 def test_relative_time_lookup_prioritizes_nearby_claims():

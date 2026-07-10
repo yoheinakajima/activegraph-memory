@@ -91,8 +91,10 @@ print(result.metadata["pipeline_telemetry"])
 ```
 
 The compiled evidence packet is placed before raw provenance. A computed answer
-is labeled verified only when its operator-specific proof obligations are met.
-Otherwise the packet is tentative and lists missing requirements.
+is labeled proof-complete only when its operator-specific evidence fields are
+present. Proof completion is structural, not a claim that the answer is
+semantically correct; readers must check every candidate against its cited rows
+and raw sources. Incomplete packets list their missing requirements.
 
 ## Compiled Memory
 

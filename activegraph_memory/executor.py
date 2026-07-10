@@ -76,14 +76,14 @@ class CompiledEvidence:
         lines = [
             f"[compiled-memory: {self.operation}]",
             "Evidence is source-grounded; verify any incomplete proof against raw sources.",
-            "Reader contract: use a Verified candidate unless its cited raw source contradicts it; check a Tentative candidate before use.",
+            "Reader contract: proof status confirms required evidence fields, not answer correctness; check every candidate against cited sources.",
         ]
         if any("temporal_distance_days" in row for row in self.rows):
             lines.append(
                 "For approximate relative time, apply temporal-distance tolerance and semantic fit; calendar-day equality alone is not decisive."
             )
         if self.candidate_answer:
-            label = "Verified candidate" if self.proof_complete else "Tentative candidate"
+            label = "Proof-complete candidate" if self.proof_complete else "Incomplete candidate"
             lines.append(f"{label}: {self.candidate_answer}")
         lines.append(
             "Proof: "

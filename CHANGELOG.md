@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Renamed compiled answer labels from `Verified candidate` / `Tentative
+  candidate` to `Proof-complete candidate` / `Incomplete candidate`.
+- Clarified that proof completion certifies the presence of operator-required
+  evidence fields, not semantic answer correctness; readers must still verify
+  candidates against cited sources.
+
 ## 0.2.0
 
 - Added profile-driven `MemoryRuntime` orchestration with `fast`, `balanced`,
