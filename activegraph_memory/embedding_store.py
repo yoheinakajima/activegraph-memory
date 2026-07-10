@@ -16,6 +16,11 @@ class EmbeddingVectorStore(Protocol):
 
     def put(self, key: str, vector: list[float], metadata: dict[str, Any]) -> None: ...
 
+    def put_many(
+        self,
+        records: list[tuple[str, list[float], dict[str, Any]]],
+    ) -> None: ...
+
 
 class SQLiteEmbeddingStore:
     """Small process-safe embedding cache with deterministic keys."""
@@ -51,20 +56,30 @@ class SQLiteEmbeddingStore:
         return [float(value) for value in json.loads(row[0])]
 
     def put(self, key: str, vector: list[float], metadata: dict[str, Any]) -> None:
-        cursor = self.connection.execute(
+        self.put_many([(key, vector, metadata)])
+
+    def put_many(
+        self,
+        records: list[tuple[str, list[float], dict[str, Any]]],
+    ) -> None:
+        before = self.connection.total_changes
+        self.connection.executemany(
             """
             INSERT OR IGNORE INTO memory_embeddings
                 (embedding_key, vector_json, metadata_json)
             VALUES (?, ?, ?)
             """,
-            (
-                key,
-                json.dumps(vector, separators=(",", ":")),
-                json.dumps(metadata, ensure_ascii=True, sort_keys=True, default=str),
-            ),
+            [
+                (
+                    key,
+                    json.dumps(vector, separators=(",", ":")),
+                    json.dumps(metadata, ensure_ascii=True, sort_keys=True, default=str),
+                )
+                for key, vector, metadata in records
+            ],
         )
         self.connection.commit()
-        self.writes += int(cursor.rowcount > 0)
+        self.writes += self.connection.total_changes - before
 
     def close(self) -> None:
         self.connection.close()
@@ -115,6 +130,13 @@ class GraphEmbeddingStore:
         )
         self._index()[key] = obj
         self.writes += 1
+
+    def put_many(
+        self,
+        records: list[tuple[str, list[float], dict[str, Any]]],
+    ) -> None:
+        for key, vector, metadata in records:
+            self.put(key, vector, metadata)
 
     def stats(self) -> dict[str, int]:
         return {"hits": self.hits, "misses": self.misses, "writes": self.writes}

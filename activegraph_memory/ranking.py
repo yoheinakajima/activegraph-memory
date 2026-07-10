@@ -172,20 +172,25 @@ class EmbeddingSignalProvider:
             missing_indexes = list(range(len(rows)))
         missing_texts = [rows[index][1] for index in missing_indexes]
         embedded = self.provider.embed(texts=missing_texts, model=self.model) if missing_texts else []
+        pending_store_records = []
         for index, vector in zip(missing_indexes, embedded):
             vectors[index] = vector
             if self.vector_store is not None:
                 uid, text = rows[index]
-                self.vector_store.put(
-                    keys[index],
-                    vector,
-                    {
+                pending_store_records.append(
+                    (
+                        keys[index],
+                        vector,
+                        {
                         "field": field,
                         "subject_id": uid,
                         "model": self.model,
                         "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-                    },
+                        },
+                    )
                 )
+        if self.vector_store is not None and pending_store_records:
+            self.vector_store.put_many(pending_store_records)
         complete_vectors = [vector or [] for vector in vectors]
         self._vectors[field] = (ids, complete_vectors)
         return ids, complete_vectors, sum(self.estimate_tokens(text) for text in missing_texts)
