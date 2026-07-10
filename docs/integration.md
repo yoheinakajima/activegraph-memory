@@ -24,11 +24,12 @@ loaded. Do not call a backend invisibly from a behavior.
 Bind optional providers through the ActiveGraph runtime:
 
 ```python
-from activegraph_memory import MemoryRuntime
+from activegraph_memory import GraphMemoryRepository
 
-memory_runtime = MemoryRuntime.from_activegraph(
+repository = GraphMemoryRepository.from_activegraph(
     activegraph_runtime,
-    "quality",
+    profile="quality",
+    extraction_model="your-extraction-model",
     reasoning_model="your-reasoning-model",
     embedding_model="your-embedding-model",
 )
@@ -37,15 +38,15 @@ memory_runtime = MemoryRuntime.from_activegraph(
 Provider credentials remain in provider configuration. They are not copied into
 memory objects, prompts, or telemetry.
 
-Use `GraphMemoryRepository` when compiled memory and retrieval traces should be
-materialized into the same graph. Pass a mapping from source-turn logical IDs to
-Core source object IDs so claims, entities, events, states, and proofs receive
-`memory_grounded_in` relations.
+The repository accepts raw turns, external accepted claims, or both. When
+claims are omitted it uses its configured typed extractor, or the lossless
+deterministic fallback when no extraction model is configured. Pass a mapping
+from source-turn logical IDs to Core source object IDs so projections retain
+their authoritative grounding.
 
 ```python
 repository.compile(
     turns=turns,
-    claims=claims,
     source_object_ids={"session-1#0": source_object.id},
 )
 ```
@@ -62,16 +63,24 @@ run rebuilds the materialized projection. `materialize_memory_index` and
 not create duplicate objects or relations.
 
 The in-process `MemoryIndex` is not itself a database. After a process crash,
-recompile it from source turns and claims, or reconstruct an application-level
-index from graph objects. Corpus vectors can survive separately through
-`SQLiteEmbeddingStore`, `GraphEmbeddingStore`, or the provider's cache.
+construct a new repository over the replayed graph and call `load()`. New source
+turns can then be added with `append()`. Stable-key upserts patch changed state
+histories without duplicating logical objects.
+
+```python
+restarted = GraphMemoryRepository(replayed_graph, runtime=memory_runtime)
+restarted.load()
+restarted.append(turns=new_turns, claims=new_claims)
+```
 
 ## Standalone Agents
 
 Standalone use does not require a running behavior loop:
 
 - `compile_memory_index` builds the projection
+- `extract_claim_inputs` provides deterministic or typed provider ingestion
 - `MemoryRuntime.retrieve` executes the pipeline
+- `GraphMemoryRepository.load` restores graph-persisted memory
 - `SQLiteEmbeddingStore` persists vectors
 - `benchmark_profiles` measures profile behavior
 
@@ -96,6 +105,12 @@ response = reasoner.reason(request)
 cache state, and metadata. Custom outputs are validated against the stage schema
 before they can affect retrieval.
 
+Extraction providers implement `MemoryExtractor.extract(turns)` and return a
+`MemoryExtractionResult`. `CallableMemoryExtractor` adapts existing functions.
+`ActiveGraphLLMMemoryExtractor` uses the same provider contract as ActiveGraph
+and bounds long-history requests with configurable turn and character batch
+limits. Usage is aggregated while each fact retains immutable source-turn IDs.
+
 ## Custom Profiles
 
 Use a copied built-in profile or construct `MemoryRuntimeProfile` directly.
@@ -109,6 +124,12 @@ Important switches include:
 - `use_diversity_selection`
 - `include_raw_sources`
 - `compact_context`
+- `adaptive_retrieval`
+- `min_sufficiency_confidence`
+- `source_budget_ratio`
+- `max_packet_rows`
+- `candidate_answer_mode`
+- `reasoning_budget`
 - `reasoning_fail_open`
 
 Every switch is enforced by `MemoryRuntime`; none is documentation-only.
@@ -128,6 +149,9 @@ Consumers should preserve its labels when passing context to an answer model:
 - `temporal_distance_days` is an accepted distance under the query's explicit
   tolerance. For approximate relative-time language, semantic fit inside that
   tolerance outranks calendar-day equality by itself.
+- Under `candidate_answer_mode="calibrated"`, a candidate is omitted unless
+  proof, deterministic sufficiency, execution confidence, and conflict checks
+  all pass the profile threshold. Evidence rows remain available either way.
 
 This contract is provider-neutral. It does not ask the answer model to invent
 facts, and every candidate remains traceable to claim and source-turn ids.

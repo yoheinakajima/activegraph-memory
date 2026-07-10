@@ -12,6 +12,7 @@ from .compiled import (
     CompiledMemoryProjection,
     EventMentionRecord,
     ListItemRecord,
+    MemoryConflictRecord,
     MemoryEntityRecord,
     PreferenceEvidenceRecord,
     StateVersionRecord,
@@ -127,13 +128,18 @@ _STATE_STOPWORDS = {
 }
 
 
-def compile_typed_projection(index) -> CompiledMemoryProjection:
+def compile_typed_projection(
+    index,
+    *,
+    enable_conflict_detection: bool = True,
+) -> CompiledMemoryProjection:
     """Build the richer projection without changing source authority."""
 
     entity_claims: dict[str, set[str]] = defaultdict(set)
     entity_turns: dict[str, set[str]] = defaultdict(set)
     entity_names: dict[str, str] = {}
     entity_kinds: dict[str, str] = {}
+    entity_aliases: dict[str, set[str]] = defaultdict(set)
     mentions: list[EventMentionRecord] = []
     states: list[StateVersionRecord] = []
     preferences: list[PreferenceEvidenceRecord] = []
@@ -145,12 +151,17 @@ def compile_typed_projection(index) -> CompiledMemoryProjection:
             entity_id = _stable_id("memory-entity", _normalize_entity(name))
             entity_ids.append(entity_id)
             entity_names.setdefault(entity_id, name)
-            entity_kinds.setdefault(entity_id, _entity_kind(name, record.text))
+            entity_kinds.setdefault(entity_id, _supplied_entity_kind(name, record.claim.metadata) or _entity_kind(name, record.text))
+            entity_aliases[entity_id].add(name)
+            entity_aliases[entity_id].update(_supplied_entity_aliases(name, record.claim.metadata))
             entity_claims[entity_id].add(record.claim_id)
             entity_turns[entity_id].update(record.source_turn_ids)
 
-        predicate = infer_predicate(record.text)
-        modality = _modality(record.text, role=str(record.claim.metadata.get("role") or ""), predicate=predicate)
+        predicate = str(record.claim.metadata.get("predicate") or infer_predicate(record.text))
+        modality = str(
+            record.claim.metadata.get("modality")
+            or _modality(record.text, role=str(record.claim.metadata.get("role") or ""), predicate=predicate)
+        )
         event_start, event_end, time_confidence, time_basis = _event_time(
             record,
             modality=modality,
@@ -163,27 +174,29 @@ def compile_typed_projection(index) -> CompiledMemoryProjection:
             text=record.text,
             predicate=predicate,
             entity_ids=tuple(entity_ids),
-            category_ids=infer_category_ids(record.text),
+            category_ids=tuple(record.claim.metadata.get("categories") or infer_category_ids(record.text)),
             modality=modality,
-            polarity=infer_polarity(record.text),
+            polarity=str(record.claim.metadata.get("polarity") or infer_polarity(record.text)),
             event_start=event_start,
             event_end=event_end,
             observed_at=record.claim.observed_at,
             time_confidence=time_confidence,
             source_turn_ids=tuple(record.source_turn_ids),
             quantity_indexes=tuple(range(len(record.quantity_claims))),
-            metadata={"time_basis": time_basis, "role": record.claim.metadata.get("role")},
+            metadata={
+                "time_basis": time_basis,
+                "role": record.claim.metadata.get("role"),
+                "extraction": record.claim.metadata.get("extraction"),
+            },
         )
         mentions.append(mention)
 
         if _is_state_claim(record.text, predicate=predicate, modality=modality):
             quantities = record.quantity_claims or [None]
             for quantity in quantities:
-                state_key = _state_key(
-                    record,
-                    entity_ids=entity_ids,
-                    predicate=predicate,
-                    quantity=quantity,
+                state_key = str(
+                    record.claim.metadata.get("state_key")
+                    or _state_key(record, entity_ids=entity_ids, predicate=predicate, quantity=quantity)
                 )
                 state_id = _stable_id("memory-state", f"{state_key}|{record.claim_id}")
                 states.append(
@@ -217,8 +230,11 @@ def compile_typed_projection(index) -> CompiledMemoryProjection:
                     preference_id=_stable_id("memory-preference", record.claim_id),
                     subject_ref=record.claim.subject_ref or "user",
                     text=record.text,
-                    polarity="negative" if _NEGATIVE_PREFERENCE_RE.search(record.text) else "positive",
-                    scope_terms=tuple(_scope_terms(record.text)),
+                    polarity=str(
+                        record.claim.metadata.get("preference_polarity")
+                        or ("negative" if _NEGATIVE_PREFERENCE_RE.search(record.text) else "positive")
+                    ),
+                    scope_terms=tuple(record.claim.metadata.get("preference_scope") or _scope_terms(record.text)),
                     explicit=record.claim.claim_kind in {"preference", "instruction"},
                     observed_at=record.claim.observed_at,
                     source_claim_id=record.claim_id,
@@ -232,7 +248,7 @@ def compile_typed_projection(index) -> CompiledMemoryProjection:
             entity_id=entity_id,
             canonical_name=entity_names[entity_id],
             kind=entity_kinds[entity_id],
-            aliases=(entity_names[entity_id],),
+            aliases=tuple(sorted(entity_aliases[entity_id], key=str.lower)),
             source_claim_ids=tuple(sorted(entity_claims[entity_id])),
             source_turn_ids=tuple(sorted(entity_turns[entity_id])),
         )
@@ -240,6 +256,7 @@ def compile_typed_projection(index) -> CompiledMemoryProjection:
     ]
     events = _canonicalize_events(index, mentions)
     state_versions, current_state = _compile_state_histories(states)
+    conflicts = _compile_conflicts(index, state_versions) if enable_conflict_detection else []
     list_items = _compile_list_items(index.turns)
     return CompiledMemoryProjection(
         entities=entities,
@@ -248,9 +265,11 @@ def compile_typed_projection(index) -> CompiledMemoryProjection:
         state_versions=state_versions,
         preferences=preferences,
         list_items=list_items,
+        conflicts=conflicts,
         current_state_by_key=current_state,
         by_entity_id={entity.entity_id: entity for entity in entities},
         by_event_id={event.event_id: event for event in events},
+        by_conflict_id={conflict.conflict_id: conflict for conflict in conflicts},
         metadata={
             "compiler": "typed_projection_v1",
             "n_entities": len(entities),
@@ -259,6 +278,7 @@ def compile_typed_projection(index) -> CompiledMemoryProjection:
             "n_state_versions": len(state_versions),
             "n_preferences": len(preferences),
             "n_list_items": len(list_items),
+            "n_conflicts": len(conflicts),
         },
     )
 
@@ -295,6 +315,22 @@ def _entity_kind(name: str, text: str) -> str:
     return "unknown"
 
 
+def _supplied_entity_kind(name: str, metadata: dict) -> str | None:
+    normalized = _normalize_entity(name)
+    for item in metadata.get("entities") or metadata.get("entity_mentions") or []:
+        if isinstance(item, dict) and _normalize_entity(str(item.get("name") or "")) == normalized:
+            return str(item.get("kind") or "unknown")
+    return None
+
+
+def _supplied_entity_aliases(name: str, metadata: dict) -> list[str]:
+    normalized = _normalize_entity(name)
+    for item in metadata.get("entities") or metadata.get("entity_mentions") or []:
+        if isinstance(item, dict) and _normalize_entity(str(item.get("name") or "")) == normalized:
+            return [str(value) for value in item.get("aliases") or [] if str(value).strip()]
+    return []
+
+
 def _modality(text: str, *, role: str, predicate: str) -> str:
     if _HYPOTHETICAL_RE.search(text):
         return "hypothetical"
@@ -306,6 +342,15 @@ def _modality(text: str, *, role: str, predicate: str) -> str:
 
 
 def _event_time(record, *, modality: str, predicate: str) -> tuple[str | None, str | None, float, str]:
+    supplied_start = record.claim.metadata.get("event_start")
+    supplied_end = record.claim.metadata.get("event_end")
+    if supplied_start or supplied_end:
+        return (
+            supplied_start or supplied_end,
+            supplied_end or supplied_start,
+            float(record.claim.metadata.get("time_confidence") or 0.9),
+            "typed_extraction",
+        )
     resolved = [ref for ref in record.temporal_refs if ref.resolved_start or ref.resolved_end]
     if resolved:
         best = max(resolved, key=lambda ref: (_temporal_ref_score(record.text, ref.text), ref.confidence))
@@ -537,6 +582,49 @@ def _compile_state_histories(states: list[StateVersionRecord]) -> tuple[list[Sta
         current[key] = out[-1]
     out.sort(key=lambda state: (state.observed_at or "", state.state_key, state.state_id))
     return out, current
+
+
+def _compile_conflicts(index, states: list[StateVersionRecord]) -> list[MemoryConflictRecord]:
+    """Compile explicit and same-time state conflicts without silently resolving them."""
+
+    candidates: dict[tuple[str, tuple[str, ...]], MemoryConflictRecord] = {}
+    for record in index.claims:
+        for target_id in record.claim.metadata.get("contradicts_claim_ids") or []:
+            if target_id not in index.by_claim_id or target_id == record.claim_id:
+                continue
+            claim_ids = tuple(sorted((record.claim_id, str(target_id))))
+            key = ("explicit", claim_ids)
+            candidates[key] = MemoryConflictRecord(
+                conflict_id=_stable_id("memory-conflict", "|".join(key[1])),
+                claim_ids=claim_ids,
+                reason="extractor_declared_contradiction",
+                confidence=min(record.claim.confidence, index.by_claim_id[str(target_id)].claim.confidence),
+                source_turn_ids=tuple(
+                    _dedupe([*record.source_turn_ids, *index.by_claim_id[str(target_id)].source_turn_ids])
+                ),
+            )
+
+    grouped: dict[tuple[str, str], list[StateVersionRecord]] = defaultdict(list)
+    for state in states:
+        grouped[(state.state_key, state.observed_at or "")].append(state)
+    for (state_key, observed_at), versions in grouped.items():
+        if len(versions) < 2:
+            continue
+        normalized_values = {_normalize_entity(version.value_text) for version in versions}
+        claim_ids = tuple(sorted(version.source_claim_id for version in versions if version.source_claim_id))
+        if len(normalized_values) < 2 or len(claim_ids) < 2:
+            continue
+        key = (state_key, claim_ids)
+        candidates[key] = MemoryConflictRecord(
+            conflict_id=_stable_id("memory-conflict", f"{state_key}|{observed_at}|{'|'.join(claim_ids)}"),
+            claim_ids=claim_ids,
+            state_key=state_key,
+            reason="incompatible_state_values_at_same_observation_time",
+            confidence=min(version.confidence for version in versions),
+            source_turn_ids=tuple(_dedupe(turn_id for version in versions for turn_id in version.source_turn_ids)),
+            metadata={"observed_at": observed_at},
+        )
+    return sorted(candidates.values(), key=lambda conflict: conflict.conflict_id)
 
 
 def _compile_list_items(turns: Iterable) -> list[ListItemRecord]:

@@ -51,6 +51,8 @@ class MemoryClaim(StrictMemoryModel):
         le=1.0,
         description="Extraction or belief confidence.",
     )
+    extraction_confidence: float = Field(default=0.7, ge=0.0, le=1.0)
+    belief_confidence: float = Field(default=0.7, ge=0.0, le=1.0)
     authority: AuthorityLevel = Field(
         default="unknown",
         description="Contextual authority of the supporting source.",
@@ -310,6 +312,23 @@ class MemoryRetrievalStage(StrictMemoryModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class MemoryIngestionStage(StrictMemoryModel):
+    """One replayable extraction/compilation run over immutable source turns."""
+
+    stage_key: str
+    operation: str = "fact_extraction"
+    extractor: str
+    model: str = ""
+    source_ids: list[str] = Field(default_factory=list)
+    fact_count: int = Field(default=0, ge=0)
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    cost_usd: float = Field(default=0.0, ge=0.0)
+    duration_ms: float = Field(default=0.0, ge=0.0)
+    cached: bool = False
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class MemoryProof(StrictMemoryModel):
     """Proof obligations and execution result for a memory query."""
 
@@ -339,6 +358,11 @@ class MemoryBenchmark(StrictMemoryModel):
     warm_latency_mean_ms: float | None = Field(default=None, ge=0.0)
     mean_context_tokens: float = Field(default=0.0, ge=0.0)
     proof_complete_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    sufficiency_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    mean_retrieval_rounds: float = Field(default=0.0, ge=0.0)
+    candidate_answer_render_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    reasoning_calls: int = Field(default=0, ge=0)
+    reasoning_cost_usd: float = Field(default=0.0, ge=0.0)
     input_tokens: int = Field(default=0, ge=0)
     output_tokens: int = Field(default=0, ge=0)
     cost_usd: float = Field(default=0.0, ge=0.0)
@@ -356,6 +380,48 @@ class MemoryEmbedding(StrictMemoryModel):
     text_sha256: str
     dimensions: int = Field(ge=1)
     vector: list[float]
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class MemorySourceTurn(StrictMemoryModel):
+    """Replayable projection of one immutable source turn."""
+
+    turn_key: str
+    session_id: str
+    session_date: str
+    session_idx: int = Field(ge=0)
+    turn_idx: int = Field(ge=0)
+    role: str
+    content: str
+    rendered_text: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class MemoryConflict(StrictMemoryModel):
+    """An unresolved or resolved incompatibility between grounded claims."""
+
+    conflict_key: str
+    claim_ids: list[str] = Field(min_length=2)
+    state_key: str | None = None
+    reason: str
+    status: str = "unresolved"
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    source_ids: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class MemoryRetrievalAssessment(StrictMemoryModel):
+    """A graph-visible sufficiency decision for one retrieval round."""
+
+    query_id: str
+    round_index: int = Field(ge=1)
+    sufficient: bool = False
+    overall_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    dimensions: dict[str, float] = Field(default_factory=dict)
+    missing_requirements: list[str] = Field(default_factory=list)
+    conflict_ids: list[str] = Field(default_factory=list)
+    reasons: list[str] = Field(default_factory=list)
+    next_queries: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -424,17 +490,21 @@ OBJECT_TYPES = [
     ObjectType(name="memory_preference", schema=MemoryPreference, description="Scoped preference evidence."),
     ObjectType(name="memory_list_item", schema=MemoryListItem, description="A position-preserving source list item."),
     ObjectType(name="memory_query_analysis", schema=MemoryQueryAnalysis, description="An executable memory query analysis."),
+    ObjectType(name="memory_ingestion_stage", schema=MemoryIngestionStage, description="A measured, replayable memory ingestion run."),
     ObjectType(name="memory_retrieval_stage", schema=MemoryRetrievalStage, description="A measured retrieval stage."),
     ObjectType(name="memory_proof", schema=MemoryProof, description="Proof obligations and evidence status."),
     ObjectType(name="memory_benchmark", schema=MemoryBenchmark, description="A memory profile benchmark report."),
     ObjectType(name="memory_embedding", schema=MemoryEmbedding, description="An optional persistent compiled-memory vector."),
+    ObjectType(name="memory_source_turn", schema=MemorySourceTurn, description="A replayable immutable source-turn projection."),
+    ObjectType(name="memory_conflict", schema=MemoryConflict, description="A source-grounded claim conflict and resolution state."),
+    ObjectType(name="memory_retrieval_assessment", schema=MemoryRetrievalAssessment, description="A measured retrieval sufficiency decision."),
 ]
 
 
 RELATION_TYPES = [
     RelationType(
         name="memory_supports",
-        source_types=("memory_claim", "evidence_bundle", "memory_item", "source", "observation"),
+        source_types=("memory_claim", "memory_conflict", "evidence_bundle", "memory_item", "source", "observation"),
         target_types=("memory_claim", "memory_answer"),
         description="Evidence or one claim supports another claim or answer.",
     ),
@@ -500,8 +570,8 @@ RELATION_TYPES = [
     ),
     RelationType(
         name="memory_grounded_in",
-        source_types=("memory_claim", "memory_entity", "memory_event", "memory_state", "memory_preference", "memory_list_item", "memory_proof"),
-        target_types=("memory_claim", "source", "observation", "memory_event"),
+        source_types=("memory_source_turn", "memory_claim", "memory_entity", "memory_event", "memory_state", "memory_preference", "memory_list_item", "memory_conflict", "memory_ingestion_stage", "memory_proof"),
+        target_types=("memory_source_turn", "memory_claim", "source", "observation", "memory_event"),
         description="A compiled memory object is grounded in an authoritative source object.",
     ),
     RelationType(
@@ -512,7 +582,7 @@ RELATION_TYPES = [
     ),
     RelationType(
         name="memory_stage_for",
-        source_types=("memory_query_analysis", "retrieval_plan", "memory_retrieval_stage", "memory_proof", "memory_benchmark"),
+        source_types=("memory_query_analysis", "retrieval_plan", "memory_retrieval_stage", "memory_retrieval_assessment", "memory_proof", "memory_benchmark"),
         target_types=("memory_query", "memory_evaluation"),
         description="A query artifact or benchmark stage belongs to a memory query or evaluation.",
     ),

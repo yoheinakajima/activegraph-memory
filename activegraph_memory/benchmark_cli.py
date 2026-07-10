@@ -6,7 +6,12 @@ import argparse
 import json
 from pathlib import Path
 
-from .benchmarking import MemoryBenchmarkCase, benchmark_profiles, render_benchmark_markdown
+from .benchmarking import (
+    MemoryBenchmarkCase,
+    benchmark_profiles,
+    benchmark_runtime_options,
+    render_benchmark_markdown,
+)
 from .compiler import ExtractedClaimInput, SourceTurn, compile_memory_index
 from .runtime import MemoryRuntime
 
@@ -20,6 +25,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Comma-separated profile names",
     )
     parser.add_argument("--repetitions", type=int, default=1)
+    parser.add_argument(
+        "--option-matrix",
+        action="store_true",
+        help="Ablate deterministic features at a constant base profile instead of comparing profiles",
+    )
+    parser.add_argument("--base-profile", default="quality")
     parser.add_argument("--format", choices=("json", "markdown"), default="markdown")
     parser.add_argument(
         "--hash-embeddings",
@@ -62,14 +73,27 @@ def main(argv: list[str] | None = None) -> int:
             embedding_provider=provider,
             embedding_model=f"hash-{max(8, args.hash_embedding_dimensions)}",
         )
-    results = benchmark_profiles(
-        index,
-        cases,
-        profiles=tuple(value.strip() for value in args.profiles.split(",") if value.strip()),
-        repetitions=max(1, args.repetitions),
-        runtime_factory=runtime_factory,
-        evaluator=_exact_candidate_evaluator if args.score_expected else None,
-    )
+    benchmark_kwargs = {
+        "repetitions": max(1, args.repetitions),
+        "runtime_factory": runtime_factory,
+        "evaluator": _exact_candidate_evaluator if args.score_expected else None,
+    }
+    if args.option_matrix:
+        results = list(
+            benchmark_runtime_options(
+                index,
+                cases,
+                base_profile=args.base_profile,
+                **benchmark_kwargs,
+            ).values()
+        )
+    else:
+        results = benchmark_profiles(
+            index,
+            cases,
+            profiles=tuple(value.strip() for value in args.profiles.split(",") if value.strip()),
+            **benchmark_kwargs,
+        )
     if args.format == "json":
         rendered = json.dumps([result.as_dict() for result in results], indent=2, sort_keys=True)
     else:

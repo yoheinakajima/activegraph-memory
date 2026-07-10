@@ -2,11 +2,18 @@
 
 ## Source And Belief
 
+### `memory_source_turn`
+
+A replayable projection of one immutable source turn with logical turn/session
+identity, role, observation date, raw content, rendered text, and optional link
+to the authoritative Core source object.
+
 ### `memory_claim`
 
 A source-grounded fact, preference, instruction, decision, procedure, or
-summary. It carries subject, scope, status, authority, confidence, validity,
-observation time, Core source IDs, and observation IDs.
+summary. It carries subject, scope, status, authority, separate extraction and
+belief confidence, validity, observation time, source-turn IDs, and observation
+IDs.
 
 ### `memory_episode`
 
@@ -53,7 +60,17 @@ A list ID, preserved ordinal position, item text, source role, and source ID.
 An optional persistent vector with model, field/subject identity, text hash,
 dimensions, and metadata. It is created only when `GraphEmbeddingStore` is used.
 
+### `memory_conflict`
+
+An explicit unresolved or resolved incompatibility with claim IDs, optional
+state identity, reason, confidence, status, and source-turn provenance.
+
 ## Query And Proof
+
+### `memory_ingestion_stage`
+
+A replayable extraction run with source-turn scope, extractor/model identity,
+fact count, token usage, provider cost, latency, cache state, and batch metadata.
 
 ### `memory_query`
 
@@ -74,6 +91,11 @@ steps for a query.
 
 One measured pipeline stage with implementation, latency, token usage, cost,
 candidate counts, cache status, and decisions.
+
+### `memory_retrieval_assessment`
+
+One deterministic stop/continue decision with per-dimension confidence, missing
+proof requirements, conflicts, reasons, and targeted next queries.
 
 ### `evidence_bundle`
 
@@ -97,8 +119,8 @@ and missing data.
 
 ### `memory_benchmark`
 
-Aggregated profile latency, context, token usage, cost, proof rate, quality, and
-benchmark metadata.
+Aggregated latency, context, rounds, sufficiency, candidate-rendering, reasoner
+calls, token usage, cost, proof rate, quality, and benchmark metadata.
 
 ## Governance
 
@@ -143,9 +165,10 @@ compiled records:
 - `StateVersionRecord`
 - `PreferenceEvidenceRecord`
 - `ListItemRecord`
+- `MemoryConflictRecord`
 
-`CompiledMemoryProjection` indexes these records by logical entity and event
-IDs. All rows retain source claim and source turn IDs.
+`CompiledMemoryProjection` indexes these records by logical entity, event, and
+conflict IDs. All rows retain source claim and source turn IDs.
 
 ## Confidence
 

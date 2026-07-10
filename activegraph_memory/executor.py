@@ -53,6 +53,29 @@ _DOMAIN_TERMS: dict[str, tuple[str, ...]] = {
     "career": ("career", "job", "profession", "work"),
     "product": ("accessory", "device", "equipment", "gear", "product", "setup"),
 }
+_NEGATIVE_SCAN_STOPWORDS = {
+    "did",
+    "do",
+    "does",
+    "ever",
+    "have",
+    "had",
+    "has",
+    "never",
+    "not",
+    "buy",
+    "bought",
+    "purchase",
+    "purchased",
+    "get",
+    "got",
+    "make",
+    "made",
+    "use",
+    "used",
+    "visit",
+    "visited",
+}
 
 
 @dataclass
@@ -70,7 +93,7 @@ class CompiledEvidence:
     confidence: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def render(self, *, max_rows: int = 16) -> str:
+    def render(self, *, max_rows: int = 16, include_candidate: bool = True) -> str:
         if not self.rows and not self.candidate_answer:
             return ""
         lines = [
@@ -82,7 +105,7 @@ class CompiledEvidence:
             lines.append(
                 "For approximate relative time, apply temporal-distance tolerance and semantic fit; calendar-day equality alone is not decisive."
             )
-        if self.candidate_answer:
+        if self.candidate_answer and include_candidate:
             label = "Proof-complete candidate" if self.proof_complete else "Incomplete candidate"
             lines.append(f"{label}: {self.candidate_answer}")
         lines.append(
@@ -119,6 +142,8 @@ def execute_query(
         evidence = _execute_aggregate(index, analysis, signals)
     elif operator in {"order", "date_delta"}:
         evidence = _execute_temporal(index, analysis, signals)
+    elif operator == "negative_existence":
+        evidence = _execute_negative_existence(index, analysis, signals)
     else:
         evidence = _execute_lookup(index, analysis, signals)
     evidence.proof_requirements = list(analysis.proof_requirements)
@@ -132,6 +157,72 @@ def execute_query(
     ]
     evidence.proof_complete = not evidence.missing_requirements and bool(evidence.rows)
     return evidence
+
+
+def _execute_negative_existence(
+    index: MemoryIndex,
+    analysis: QueryAnalysis,
+    signals: RetrievalSignals,
+) -> CompiledEvidence:
+    """Produce a bounded-memory absence certificate or positive counterevidence."""
+
+    q_tokens = (set(analysis.entity_terms) or claim_tokens(analysis.query)) - _NEGATIVE_SCAN_STOPWORDS
+    matches = []
+    scanned = 0
+    for record in index.claims:
+        role = str(record.claim.metadata.get("role") or "unknown")
+        if role not in analysis.source_roles:
+            continue
+        observed = record.claim.observed_at
+        if not _in_window(observed, analysis.time_start, analysis.time_end):
+            continue
+        scanned += 1
+        overlap = _overlap(q_tokens, claim_tokens(record.text))
+        dense = signals.claim_scores.get(record.claim_id, 0.0)
+        if overlap >= 0.45 or (overlap >= 0.2 and dense > 0.02):
+            matches.append((max(overlap, dense), record))
+    matches.sort(key=lambda item: (-item[0], item[1].sort_key, item[1].claim_id))
+    selected = [record for _, record in matches[:12]]
+    if selected:
+        rows = [
+            {
+                "counterevidence": record.text,
+                "observed_at": record.claim.observed_at,
+                "sources": ",".join(record.source_turn_ids),
+            }
+            for record in selected
+        ]
+        candidate = "Matching evidence exists in memory."
+    else:
+        rows = [
+            {
+                "absence_scope": "compiled accepted memory",
+                "claims_scanned": scanned,
+                "source_roles": ",".join(analysis.source_roles),
+                "time_window": analysis.time_label,
+            }
+        ]
+        candidate = "No matching evidence was found in the bounded memory scope."
+    return CompiledEvidence(
+        operation="negative-existence/bounded-scan",
+        rows=rows,
+        candidate_answer=candidate,
+        satisfied_requirements=[
+            "entity_compatibility",
+            "bounded_candidate_set",
+            "source_coverage",
+            "absence_certificate",
+        ],
+        selected_claim_ids=[record.claim_id for record in selected],
+        selected_turn_ids=[turn_id for record in selected for turn_id in record.source_turn_ids],
+        confidence=0.9 if selected else 0.82,
+        metadata={
+            "bounded_scope": "compiled accepted memory",
+            "claims_scanned": scanned,
+            "matches_found": len(matches),
+            "world_level_absence_claim": False,
+        },
+    )
 
 
 def _execute_ordinal(index: MemoryIndex, analysis: QueryAnalysis, signals: RetrievalSignals) -> CompiledEvidence:

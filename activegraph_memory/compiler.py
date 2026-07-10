@@ -230,6 +230,7 @@ class ExtractedClaimInput:
     confidence: float = 0.82
     source: str = "external_extract"
     metadata: dict[str, Any] = field(default_factory=dict)
+    source_turn_ids: tuple[str, ...] = ()
 
 
 @dataclass
@@ -331,6 +332,8 @@ def compile_memory_index(
     turns: Iterable[SourceTurn],
     claims: Iterable[ExtractedClaimInput],
     metadata: dict[str, Any] | None = None,
+    enable_temporal_resolution: bool = True,
+    enable_conflict_detection: bool = True,
 ) -> MemoryIndex:
     """Build a source-grounded memory index from turns and claim inputs."""
 
@@ -348,10 +351,12 @@ def compile_memory_index(
         session_turns = turns_by_session.get(raw.session_id, [])
         source_turns: list[SourceTurn] = []
         seen_turns: set[str] = set()
+        direct_turns = [by_turn_id[turn_id] for turn_id in raw.source_turn_ids if turn_id in by_turn_id]
+        indexed_turns = []
         for idx in raw.mentioned_turn_idxs:
-            if idx < 0 or idx >= len(session_turns):
-                continue
-            turn = session_turns[idx]
+            if 0 <= idx < len(session_turns):
+                indexed_turns.append(session_turns[idx])
+        for turn in [*direct_turns, *indexed_turns]:
             if turn.turn_id in seen_turns:
                 continue
             seen_turns.add(turn.turn_id)
@@ -363,12 +368,24 @@ def compile_memory_index(
 
         source_turn_ids = [turn.turn_id for turn in source_turns]
         claim_id = stable_claim_id(raw.session_id, raw.role, text)
-        kind = infer_claim_kind(text, role=raw.role)
-        temporal_refs = extract_temporal_refs(
-            text,
-            anchor_time=_date_prefix(raw.session_date),
+        kind_hint = raw.metadata.get("claim_kind")
+        kind = infer_claim_kind(text, role=raw.role) if kind_hint in (None, "unknown") else kind_hint
+        supplied_temporal = raw.metadata.get("temporal_refs") or []
+        temporal_refs = (
+            [TemporalRef.model_validate(item) for item in supplied_temporal]
+            if supplied_temporal
+            else (
+                extract_temporal_refs(text, anchor_time=_date_prefix(raw.session_date))
+                if enable_temporal_resolution
+                else []
+            )
         )
-        quantities = extract_quantity_claims(text)
+        supplied_quantities = raw.metadata.get("quantity_claims") or []
+        quantities = (
+            [QuantityClaim.model_validate(item) for item in supplied_quantities]
+            if supplied_quantities
+            else extract_quantity_claims(text)
+        )
         sort_key = (
             raw.session_date,
             raw.session_idx,
@@ -377,14 +394,24 @@ def compile_memory_index(
         claim = MemoryClaim(
             text=text,
             claim_kind=kind,
-            subject_ref=_subject_for_role(raw.role),
-            scope=infer_scope(text),
+            subject_ref=raw.metadata.get("subject_ref") or _subject_for_role(raw.role),
+            scope=list(raw.metadata.get("scope") or infer_scope(text)),
             status="active",
             confidence=max(0.0, min(1.0, raw.confidence)),
-            authority=infer_authority(text, role=raw.role),
+            extraction_confidence=max(0.0, min(1.0, raw.confidence)),
+            belief_confidence=max(
+                0.0,
+                min(1.0, float(raw.metadata.get("belief_confidence", raw.confidence))),
+            ),
+            authority=(
+                infer_authority(text, role=raw.role)
+                if raw.metadata.get("authority") in (None, "unknown")
+                else raw.metadata["authority"]
+            ),
             source_ids=source_turn_ids,
-            valid_from=_date_prefix(raw.session_date),
-            observed_at=_date_prefix(raw.session_date),
+            valid_from=raw.metadata.get("valid_from") or _date_prefix(raw.session_date),
+            valid_until=raw.metadata.get("valid_until"),
+            observed_at=raw.metadata.get("observed_at") or _date_prefix(raw.session_date),
             metadata={
                 "claim_id": claim_id,
                 "role": raw.role,
@@ -392,6 +419,7 @@ def compile_memory_index(
                 "session_date": raw.session_date,
                 "session_idx": raw.session_idx,
                 "source": raw.source,
+                "source_turn_ids": source_turn_ids,
                 "mentioned_turn_idxs": list(raw.mentioned_turn_idxs),
                 "temporal_refs": [ref.model_dump() for ref in temporal_refs],
                 "quantity_claims": [q.model_dump() for q in quantities],
@@ -407,6 +435,8 @@ def compile_memory_index(
                 quantity_claims=quantities,
                 sort_key=sort_key,
                 topic_key=topic_key(text),
+                supports=list(raw.metadata.get("supports_claim_ids") or []),
+                contradicts=list(raw.metadata.get("contradicts_claim_ids") or []),
             )
         )
 
@@ -427,7 +457,14 @@ def compile_memory_index(
     )
     from .semantic import compile_typed_projection
 
-    index.compiled = compile_typed_projection(index)
+    index.metadata["compiler_options"] = {
+        "temporal_resolution": enable_temporal_resolution,
+        "conflict_detection": enable_conflict_detection,
+    }
+    index.compiled = compile_typed_projection(
+        index,
+        enable_conflict_detection=enable_conflict_detection,
+    )
     return index
 
 

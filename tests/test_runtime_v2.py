@@ -1,21 +1,30 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 
 from activegraph import Graph
-from activegraph.llm import HashEmbeddingProvider
+from activegraph.llm import HashEmbeddingProvider, LLMResponse
 
 from activegraph_memory import (
+    ActiveGraphMemorySettings,
     EmbeddingSignalProvider,
+    ExtractedMemoryFact,
     ExtractedClaimInput,
+    GraphMemoryRepository,
     MemoryBenchmarkCase,
     MemoryRuntime,
+    MemoryExtractionResult,
     ReasoningResponse,
     SQLiteEmbeddingStore,
     SourceTurn,
     analyze_query,
     benchmark_profiles,
+    benchmark_ingestion,
+    benchmark_reasoning_ablations,
     compile_memory_index,
+    extract_claim_inputs,
+    load_memory_index,
     materialize_memory_index,
     materialize_retrieval_trace,
     runtime_profile,
@@ -538,6 +547,52 @@ def test_optional_reasoning_fails_open_and_is_audited():
     assert all(stage["metadata"]["fail_open"] is True for stage in failed)
 
 
+class _CompleteReasoner:
+    def reason(self, request):
+        if request.stage == "query_classification":
+            data = request.payload["deterministic_analysis"]
+        elif request.stage == "retrieval_strategy":
+            data = request.payload["deterministic_strategy"]
+        elif request.stage == "retrieval_analysis":
+            data = {"sufficient": True, "additional_queries": [], "missing_requirements": []}
+        else:
+            data = {
+                "priority_claim_ids": [],
+                "priority_source_ids": [],
+                "drop_claim_ids": [],
+                "drop_source_ids": [],
+                "rationale": "fixture",
+            }
+        return ReasoningResponse(
+            data=data,
+            model="fixture",
+            input_tokens=5,
+            output_tokens=2,
+            cost_usd=0.001,
+            latency_ms=1.0,
+        )
+
+
+def test_reasoning_budget_limits_calls_and_audits_skipped_stages():
+    reasoner = _Reasoner()
+    base = runtime_profile("max_quality")
+    profile = base.model_copy(
+        update={"reasoning_budget": base.reasoning_budget.model_copy(update={"max_calls": 1})}
+    )
+    result = MemoryRuntime(profile, reasoner=reasoner).retrieve(
+        _index(),
+        "Can you recommend a Miami hotel based on all of my preferences?",
+    )
+
+    assert len(reasoner.stages) == 1
+    skipped = [
+        stage
+        for stage in result.metadata["pipeline_telemetry"]["stages"]
+        if stage["metadata"].get("reason") == "reasoning_budget_exhausted"
+    ]
+    assert skipped
+
+
 def test_profile_switches_disable_compiler_packet_and_raw_sources():
     profile = runtime_profile("fast").model_copy(
         update={"use_compiled_projection": False, "include_raw_sources": False}
@@ -604,6 +659,38 @@ def test_profile_benchmark_reports_latency_context_and_cost():
     assert all(report.mean_context_tokens > 0 for report in reports)
     assert all(report.cost_usd == 0 for report in reports)
     assert all(report.proof_complete_rate == 1.0 for report in reports)
+    assert all(report.mean_retrieval_rounds >= 1 for report in reports)
+    assert all(0 <= report.sufficiency_rate <= 1 for report in reports)
+    assert all(0 <= report.candidate_answer_render_rate <= 1 for report in reports)
+
+
+def test_ingestion_benchmark_measures_compile_and_graph_materialization():
+    report = benchmark_ingestion(
+        _index().turns,
+        repetitions=2,
+        graph_factory=Graph,
+    )
+
+    assert report.extractor == "DeterministicMemoryExtractor"
+    assert report.turns == len(_index().turns)
+    assert report.facts == len(_index().turns)
+    assert report.latency_mean_ms >= 0
+    assert report.mean_graph_objects > report.turns
+    assert report.mean_graph_relations > 0
+
+
+def test_reasoning_ablation_benchmark_reports_marginal_calls_and_cost():
+    reports = benchmark_reasoning_ablations(
+        _index(),
+        [MemoryBenchmarkCase("q1", "Can you recommend a Miami hotel?")],
+        runtime_factory=lambda profile: MemoryRuntime(profile, reasoner=_CompleteReasoner()),
+        repetitions=1,
+    )
+
+    assert reports["reasoning_off"].reasoning_calls == 0
+    assert reports["reasoning_off"].reasoning_cost_usd == 0
+    assert reports["reasoning_all"].reasoning_calls > 0
+    assert reports["reasoning_all"].reasoning_cost_usd > 0
 
 
 def test_profiles_expose_distinct_cost_quality_knobs():
@@ -614,3 +701,253 @@ def test_profiles_expose_distinct_cost_quality_knobs():
     assert fast.max_retrieval_rounds < quality.max_retrieval_rounds
     assert fast.reasoning.retrieval_analysis == "off"
     assert quality.reasoning.retrieval_analysis == "always"
+
+
+def test_deterministic_extraction_compiles_raw_turns_without_external_claims():
+    turns = [_turn("raw", 0, 0, "user", "I bought a camera for $900 yesterday.", "2023-04-02")]
+
+    claims, extraction = extract_claim_inputs(turns)
+    index = compile_memory_index(turns=turns, claims=claims)
+
+    assert extraction.metadata["lossless_turn_fallback"] is True
+    assert claims[0].source_turn_ids == ("raw#0",)
+    assert index.claims[0].source_turn_ids == ["raw#0"]
+    assert index.claims[0].quantity_claims[0].value == 900
+
+
+class _TypedExtractor:
+    def extract(self, turns):
+        return MemoryExtractionResult(
+            facts=(
+                ExtractedMemoryFact(
+                    text="The user purchased a portrait lens.",
+                    source_turn_ids=[turns[0].turn_id],
+                    predicate="purchase",
+                    entities=[{"name": "Portrait Lens", "kind": "camera_equipment", "aliases": ["lens"]}],
+                    categories=["camera", "expense"],
+                    modality="actual",
+                    event_start="2023-04-01",
+                    event_end="2023-04-01",
+                    time_confidence=0.99,
+                    quantities=[
+                        {
+                            "property_name": "money",
+                            "value": 900,
+                            "unit": "usd",
+                            "exactness": "exact",
+                            "source_text": "$900",
+                            "confidence": 0.98,
+                        }
+                    ],
+                ),
+            ),
+            extractor="typed-fixture",
+        )
+
+
+def test_typed_extraction_hints_drive_projection_instead_of_being_discarded():
+    turns = [_turn("typed", 0, 0, "user", "That lens was nine hundred dollars.", "2023-04-02")]
+    claims, _ = extract_claim_inputs(turns, extractor=_TypedExtractor())
+
+    index = compile_memory_index(turns=turns, claims=claims)
+    mention = index.compiled.event_mentions[0]
+    entity = index.compiled.entities[0]
+
+    assert mention.predicate == "purchase"
+    assert mention.event_start == "2023-04-01"
+    assert mention.metadata["time_basis"] == "typed_extraction"
+    assert entity.kind == "camera_equipment"
+    assert set(entity.aliases) == {"Portrait Lens", "lens"}
+    assert index.claims[0].quantity_claims[0].value == 900
+
+
+class _BatchExtractionProvider:
+    def __init__(self):
+        self.calls = []
+
+    def complete(self, **kwargs):
+        import json
+
+        payload = json.loads(kwargs["messages"][0].content)
+        self.calls.append(payload)
+        facts = [
+            ExtractedMemoryFact(
+                text=f"Remembered: {turn['content']}",
+                source_turn_ids=[turn["turn_id"]],
+            )
+            for turn in payload
+        ]
+        return LLMResponse(
+            raw_text="",
+            parsed={"facts": [fact.model_dump() for fact in facts]},
+            input_tokens=10,
+            output_tokens=5,
+            cost_usd=Decimal("0.001"),
+            latency_seconds=0.02,
+            model=kwargs["model"],
+            finish_reason="stop",
+            cache_hit=False,
+            provider_meta={"fixture": True},
+        )
+
+
+def test_llm_extraction_batches_long_histories_and_aggregates_usage():
+    from activegraph_memory import ActiveGraphLLMMemoryExtractor
+
+    turns = [
+        _turn(f"batch-{idx}", idx, 0, "user", f"fact {idx}", f"2023-04-{idx + 1:02d}")
+        for idx in range(5)
+    ]
+    provider = _BatchExtractionProvider()
+    result = ActiveGraphLLMMemoryExtractor(
+        provider,
+        model="fixture-model",
+        max_turns_per_batch=2,
+    ).extract(turns)
+
+    assert [len(call) for call in provider.calls] == [2, 2, 1]
+    assert [fact.source_turn_ids[0] for fact in result.facts] == [turn.turn_id for turn in turns]
+    assert result.input_tokens == 30
+    assert result.output_tokens == 15
+    assert result.cost_usd == 0.003
+    assert result.latency_ms == 60
+    assert result.metadata["batch_sizes"] == [2, 2, 1]
+
+
+def test_graph_materialization_can_rebuild_runtime_after_restart():
+    graph = Graph()
+    original = _index()
+    materialize_memory_index(graph, original)
+
+    loaded = load_memory_index(graph)
+    result = MemoryRuntime("fast").retrieve(loaded, "How many women are currently on Rachel's team?")
+
+    assert len(graph.objects(type="memory_source_turn")) == len(original.turns)
+    assert result.metadata["compiled_evidence"]["candidate_answer"] == "6"
+
+
+def test_graph_repository_append_survives_new_repository_instance():
+    graph = Graph()
+    old_turn = _turn("old", 0, 0, "user", "Rachel's team has five women.", "2023-01-01")
+    new_turn = _turn("new", 1, 0, "user", "Rachel's team now has six women.", "2023-02-01")
+    repository = GraphMemoryRepository(graph, runtime=MemoryRuntime("fast"))
+    repository.compile(
+        turns=[old_turn],
+        claims=[ExtractedClaimInput("Rachel's team has five women.", "old", "2023-01-01", 0, "user", (0,))],
+    )
+    repository.append(
+        turns=[new_turn],
+        claims=[ExtractedClaimInput("Rachel's team now has six women.", "new", "2023-02-01", 1, "user", (0,))],
+    )
+
+    restarted = GraphMemoryRepository(graph, runtime=MemoryRuntime("fast"))
+    restarted.load()
+    result = restarted.retrieve("How many women are currently on Rachel's team?", query_id="restart-query")
+
+    assert result.metadata["compiled_evidence"]["candidate_answer"] == "6"
+    assert len(graph.objects(type="memory_source_turn")) == 2
+
+
+def test_graph_repository_preserves_ingestion_usage_across_append_and_restart():
+    graph = Graph()
+    repository = GraphMemoryRepository(graph, runtime=MemoryRuntime("fast"))
+    repository.compile(turns=[_turn("first", 0, 0, "user", "I bought a bike.", "2023-01-01")])
+    repository.append(turns=[_turn("second", 1, 0, "user", "I sold the bike.", "2023-02-01")])
+
+    assert len(graph.objects(type="memory_ingestion_stage")) == 2
+    restarted = GraphMemoryRepository(graph, runtime=MemoryRuntime("fast"))
+    loaded = restarted.load()
+
+    assert len(loaded.metadata["ingestion_runs"]) == 2
+    assert sum(run["fact_count"] for run in loaded.metadata["ingestion_runs"]) == 2
+
+
+def test_repository_settings_control_compilation_and_runtime_profile():
+    from types import SimpleNamespace
+
+    graph = Graph()
+    activegraph_runtime = SimpleNamespace(
+        graph=graph,
+        llm_provider=None,
+        embedding_provider=None,
+    )
+    settings = ActiveGraphMemorySettings(
+        runtime_profile="max_quality",
+        enable_claim_extraction=False,
+        enable_temporal_resolution=False,
+        enable_conflict_detection=False,
+        adaptive_retrieval=False,
+    )
+    repository = GraphMemoryRepository.from_activegraph(activegraph_runtime, settings=settings)
+    turn = _turn("settings", 0, 0, "user", "I bought a bike yesterday.", "2023-01-02")
+
+    assert repository.runtime.profile.name == "max_quality"
+    assert repository.runtime.profile.adaptive_retrieval is False
+    try:
+        repository.compile(turns=[turn])
+    except ValueError as exc:
+        assert "disabled" in str(exc)
+    else:
+        raise AssertionError("disabled extraction must require explicit claims")
+
+    index = repository.compile(
+        turns=[turn],
+        claims=[ExtractedClaimInput("I bought a bike yesterday.", "settings", "2023-01-02", 0, "user", (0,))],
+    )
+    assert index.claims[0].temporal_refs == []
+    assert index.compiled.conflicts == []
+
+
+def test_conflicting_state_prevents_calibrated_candidate_rendering():
+    turns = [
+        _turn("left", 0, 0, "user", "The launch budget is $50,000.", "2023-04-01"),
+        _turn("right", 1, 0, "user", "The launch budget is $75,000.", "2023-04-01"),
+    ]
+    claims = [
+        ExtractedClaimInput(
+            "The launch budget is $50,000.", "left", "2023-04-01", 0, "user", (0,),
+            metadata={"state_key": "launch|budget"},
+        ),
+        ExtractedClaimInput(
+            "The launch budget is $75,000.", "right", "2023-04-01", 1, "user", (0,),
+            metadata={"state_key": "launch|budget"},
+        ),
+    ]
+
+    index = compile_memory_index(turns=turns, claims=claims)
+    result = MemoryRuntime("balanced").retrieve(index, "What is the current launch budget?")
+
+    assert index.compiled.conflicts
+    assert result.metadata["retrieval_assessment"]["conflict_ids"]
+    assert result.metadata["candidate_answer_rendered"] is False
+    assert "Proof-complete candidate" not in result.context_text
+
+
+def test_confidence_driven_retrieval_records_round_queries_and_assessment():
+    result = MemoryRuntime("balanced").retrieve(
+        _index(),
+        "Which happened first, the Alpha launch or the Beta launch?",
+    )
+
+    assert result.metadata["retrieval_rounds_used"] == 2
+    assert len(result.metadata["retrieval_round_queries"]) == 2
+    assert result.metadata["retrieval_assessment"]["sufficient"] is False
+    assessment_stages = [
+        stage
+        for stage in result.metadata["pipeline_telemetry"]["stages"]
+        if stage["stage"] == "retrieval_assessment"
+    ]
+    assert assessment_stages
+
+
+def test_negative_existence_returns_bounded_certificate_and_counterevidence():
+    index = _index()
+
+    found = MemoryRuntime("fast").retrieve(index, "Did I never buy a road bike?")
+    absent = MemoryRuntime("fast").retrieve(index, "Did I never buy a sailboat?")
+
+    assert found.metadata["compiled_evidence"]["candidate_answer"] == "Matching evidence exists in memory."
+    assert "road bike" in found.metadata["compiled_evidence"]["rows"][0]["counterevidence"]
+    assert absent.metadata["compiled_evidence"]["candidate_answer"].startswith("No matching evidence")
+    assert absent.metadata["compiled_evidence"]["metadata"]["world_level_absence_claim"] is False
+    assert absent.metadata["compiled_evidence"]["proof_complete"] is True

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from .assessment import RetrievalAssessment, assess_retrieval
 from .compiler import MemoryIndex
 from .executor import CompiledEvidence, execute_query
 from .object_types import MemoryQuery
@@ -164,36 +165,36 @@ class MemoryRuntime:
                 cost_per_million_tokens=self.embedding_cost_per_million_tokens,
                 vector_store=self.embedding_store,
             )
+        max_rounds = min(
+            self.profile.max_retrieval_rounds,
+            int(strategy_data.get("max_retrieval_rounds") or self.profile.max_retrieval_rounds),
+        )
         rounds: list[RetrievalSignals] = []
-        with telemetry.measure("candidate_generation", "hybrid_retrieval") as stage:
-            lexical = lexical_signals(index, analysis.query)
-            initial = RetrievalSignals(
-                claim_scores=dict(claim_scores or {}),
-                turn_scores=dict(turn_scores or {}),
-                metadata={"provider": "caller_scores"},
-            )
-            initial_sets = [lexical]
-            if initial.claim_scores or initial.turn_scores:
-                initial_sets.append(initial)
-            if provider is not None and self.profile.use_embeddings:
-                initial_sets.append(provider.score(analysis.query))
-            rounds.append(fuse_signals(initial_sets) if self.profile.use_rank_fusion else initial_sets[-1])
+        round_queries: list[str] = []
 
-            max_rounds = min(
-                self.profile.max_retrieval_rounds,
-                int(strategy_data.get("max_retrieval_rounds") or self.profile.max_retrieval_rounds),
-            )
-            for variant in list(strategy_data.get("query_variants") or [])[1:max_rounds]:
-                variant_sets = [lexical_signals(index, variant)]
-                if provider is not None and self.profile.use_embeddings:
-                    variant_sets.append(provider.score(variant))
-                rounds.append(fuse_signals(variant_sets) if self.profile.use_rank_fusion else variant_sets[-1])
+        def score_variant(value: str, *, include_caller_scores: bool = False) -> RetrievalSignals:
+            signal_sets = [lexical_signals(index, value)]
+            if include_caller_scores and (claim_scores or turn_scores):
+                signal_sets.append(
+                    RetrievalSignals(
+                        claim_scores=dict(claim_scores or {}),
+                        turn_scores=dict(turn_scores or {}),
+                        metadata={"provider": "caller_scores"},
+                    )
+                )
+            if provider is not None and self.profile.use_embeddings:
+                signal_sets.append(provider.score(value))
+            return fuse_signals(signal_sets) if self.profile.use_rank_fusion else signal_sets[-1]
+
+        with telemetry.measure("candidate_generation", "hybrid_retrieval") as stage:
+            rounds.append(score_variant(analysis.query, include_caller_scores=True))
+            round_queries.append(analysis.query)
             signals = propagate_graph_signals(index, merge_rounds(rounds))
             stage.input_tokens = signals.input_tokens
             stage.cost_usd = signals.cost_usd
             stage.candidates_in = len(index.claims) + len(index.turns)
             stage.candidates_out = len(signals.claim_scores) + len(signals.turn_scores)
-            stage.metadata.update({"rounds": len(rounds), **signals.metadata})
+            stage.metadata.update({"rounds": len(rounds), "queries": list(round_queries), **signals.metadata})
 
         with telemetry.measure("operator_execution", "typed_projection_executor") as stage:
             if self.profile.use_compiled_projection:
@@ -213,11 +214,28 @@ class MemoryRuntime:
                 }
             )
 
+        with telemetry.measure("retrieval_assessment", "deterministic_sufficiency") as stage:
+            assessment = assess_retrieval(
+                index,
+                analysis,
+                evidence,
+                signals,
+                round_index=len(rounds),
+                min_confidence=self.profile.min_sufficiency_confidence,
+            )
+            stage.candidates_in = len(evidence.rows)
+            stage.candidates_out = len(assessment.next_queries)
+            stage.metadata.update(assessment.model_dump())
+
         analysis_reasoning = self._reason_stage(
             "retrieval_analysis",
             mode=self.profile.reasoning.retrieval_analysis,
-            fallback=not evidence.proof_complete,
-            payload={"analysis": analysis.model_dump(), "compiled_evidence": evidence.__dict__},
+            fallback=not assessment.sufficient,
+            payload={
+                "analysis": analysis.model_dump(),
+                "compiled_evidence": evidence.__dict__,
+                "deterministic_assessment": assessment.model_dump(),
+            },
             output_contract={
                 "type": "object",
                 "properties": {
@@ -228,27 +246,58 @@ class MemoryRuntime:
             },
             telemetry=telemetry,
         )
+        expansion_queries = list(assessment.next_queries)
         if analysis_reasoning is not None:
-            additions = [str(value) for value in analysis_reasoning.data.get("additional_queries", []) if str(value).strip()]
-            remaining = max(0, self.profile.max_retrieval_rounds - len(rounds))
-            if additions and remaining:
-                with telemetry.measure("targeted_expansion", "reasoned_query_expansion") as stage:
-                    for variant in additions[:remaining]:
-                        variant_sets = [lexical_signals(index, variant)]
-                        if provider is not None and self.profile.use_embeddings:
-                            variant_sets.append(provider.score(variant))
-                        rounds.append(fuse_signals(variant_sets))
+            expansion_queries.extend(
+                str(value)
+                for value in analysis_reasoning.data.get("additional_queries", [])
+                if str(value).strip()
+            )
+        expansion_queries.extend(list(strategy_data.get("query_variants") or [])[1:])
+        expansion_queries = _dedupe_queries(expansion_queries, exclude=set(round_queries))
+        if self.profile.adaptive_retrieval and not assessment.sufficient and len(rounds) < max_rounds:
+            with telemetry.measure("targeted_expansion", "confidence_driven_query_expansion") as stage:
+                executed = []
+                assessments = []
+                for variant in expansion_queries:
+                    if len(rounds) >= max_rounds or assessment.sufficient:
+                        break
+                    rounds.append(score_variant(variant))
+                    round_queries.append(variant)
+                    executed.append(variant)
                     signals = propagate_graph_signals(index, merge_rounds(rounds))
                     if self.profile.use_compiled_projection:
                         evidence = execute_query(index, analysis, signals)
-                    stage.candidates_out = len(evidence.rows)
-                    stage.metadata["queries"] = additions[:remaining]
+                    assessment = assess_retrieval(
+                        index,
+                        analysis,
+                        evidence,
+                        signals,
+                        round_index=len(rounds),
+                        min_confidence=self.profile.min_sufficiency_confidence,
+                    )
+                    assessments.append(assessment.model_dump())
+                stage.input_tokens = sum(item.input_tokens for item in rounds[1:])
+                stage.cost_usd = sum(item.cost_usd for item in rounds[1:])
+                stage.candidates_out = len(evidence.rows)
+                stage.metadata.update(
+                    {
+                        "queries": executed,
+                        "stopped_sufficient": assessment.sufficient,
+                        "assessments": assessments,
+                    }
+                )
 
         _boost_compiled_evidence(signals, evidence)
-        packet = evidence.render(max_rows=16 if self.profile.compact_context else 32)
+        candidate_answer_rendered = _should_render_candidate(self.profile, evidence, assessment)
+        packet = evidence.render(
+            max_rows=self.profile.max_packet_rows if self.profile.compact_context else self.profile.max_packet_rows * 2,
+            include_candidate=candidate_answer_rendered,
+        )
         packet_tokens = self.token_counter(packet) if packet else 0
         requested_budget = max(256, int(strategy_data.get("token_budget") or self.profile.token_budget))
-        base_budget = max(256, requested_budget - packet_tokens - 16)
+        source_ceiling = max(256, int(requested_budget * self.profile.source_budget_ratio))
+        base_budget = max(256, source_ceiling - packet_tokens - 16)
         with telemetry.measure("source_packaging", "provenance_context_assembler") as stage:
             result = retrieve_memory(
                 index,
@@ -276,11 +325,12 @@ class MemoryRuntime:
         packaging_reasoning = self._reason_stage(
             "context_packaging",
             mode=self.profile.reasoning.context_packaging,
-            fallback=self.token_counter(result.context_text) > requested_budget or not evidence.proof_complete,
+            fallback=self.token_counter(result.context_text) > requested_budget or not assessment.sufficient,
             payload={
                 "query": analysis.query,
                 "analysis": analysis.model_dump(),
                 "compiled_evidence": evidence.__dict__,
+                "retrieval_assessment": assessment.model_dump(),
                 "selected_claim_ids": result.selected_claim_ids,
                 "selected_source_ids": result.selected_turn_ids,
                 "token_budget": requested_budget,
@@ -331,8 +381,13 @@ class MemoryRuntime:
                 "runtime_profile": self.profile.model_dump(),
                 "query_analysis": analysis.model_dump(),
                 "compiled_evidence": evidence.__dict__,
+                "retrieval_assessment": assessment.model_dump(),
                 "pipeline_telemetry": telemetry.as_dict(),
                 "requested_pipeline_token_budget": requested_budget,
+                "source_context_token_ceiling": source_ceiling,
+                "retrieval_rounds_used": len(rounds),
+                "retrieval_round_queries": round_queries,
+                "candidate_answer_rendered": candidate_answer_rendered,
                 "estimated_context_tokens": self.token_counter(result.context_text),
             }
         )
@@ -340,6 +395,8 @@ class MemoryRuntime:
             {
                 "compiled_event_ids": evidence.selected_event_ids,
                 "compiled_proof_complete": evidence.proof_complete,
+                "retrieval_sufficient": assessment.sufficient,
+                "conflict_ids": assessment.conflict_ids,
             }
         )
         return result
@@ -357,7 +414,22 @@ class MemoryRuntime:
         should_run = mode == "always" or (mode == "fallback" and fallback)
         if not should_run or self.reasoner is None:
             return None
+        allowed, budget_state = _reasoning_budget_allows(self.profile, telemetry)
+        if not allowed:
+            telemetry.stages.append(
+                StageTelemetry(
+                    stage=stage,
+                    implementation=f"reasoner:{type(self.reasoner).__name__}",
+                    metadata={
+                        "skipped": True,
+                        "reason": "reasoning_budget_exhausted",
+                        "budget_state": budget_state,
+                    },
+                )
+            )
+            return None
         request = ReasoningRequest(stage=stage, payload=payload, output_contract=output_contract)
+        response: ReasoningResponse | None = None
         try:
             response = self.reasoner.reason(request)
             schema = {
@@ -382,10 +454,16 @@ class MemoryRuntime:
                 StageTelemetry(
                     stage=stage,
                     implementation=f"reasoner:{type(self.reasoner).__name__}",
+                    duration_ms=response.latency_ms if response is not None else 0.0,
+                    input_tokens=response.input_tokens if response is not None else 0,
+                    output_tokens=response.output_tokens if response is not None else 0,
+                    cost_usd=response.cost_usd if response is not None else 0.0,
+                    cached=response.cached if response is not None else False,
                     metadata={
                         "failed": True,
                         "error_type": type(exc).__name__,
                         "fail_open": self.profile.reasoning_fail_open,
+                        "model": response.model if response is not None else "",
                     },
                 )
             )
@@ -452,3 +530,60 @@ def _rough_token_count(text: str) -> int:
 
 def _known_ids(values, known: set[str]) -> list[str]:
     return [str(value) for value in (values or []) if str(value) in known]
+
+
+def _dedupe_queries(values, *, exclude: set[str] | None = None) -> list[str]:
+    seen = {value.lower().strip() for value in (exclude or set())}
+    out = []
+    for value in values:
+        normalized = " ".join(str(value).split())
+        key = normalized.lower()
+        if key and key not in seen:
+            seen.add(key)
+            out.append(normalized)
+    return out
+
+
+def _should_render_candidate(
+    profile: MemoryRuntimeProfile,
+    evidence: CompiledEvidence,
+    assessment: RetrievalAssessment,
+) -> bool:
+    if not evidence.candidate_answer or profile.candidate_answer_mode == "never":
+        return False
+    if profile.candidate_answer_mode == "proof_complete":
+        return evidence.proof_complete
+    return bool(
+        evidence.proof_complete
+        and assessment.sufficient
+        and evidence.confidence >= profile.min_sufficiency_confidence
+        and not assessment.conflict_ids
+    )
+
+
+def _reasoning_budget_allows(
+    profile: MemoryRuntimeProfile,
+    telemetry: PipelineTelemetry,
+) -> tuple[bool, dict[str, float]]:
+    stages = [
+        stage
+        for stage in telemetry.stages
+        if stage.implementation.startswith("reasoner:")
+        and not stage.metadata.get("skipped")
+    ]
+    state = {
+        "calls": len(stages),
+        "input_tokens": sum(stage.input_tokens for stage in stages),
+        "output_tokens": sum(stage.output_tokens for stage in stages),
+        "cost_usd": round(sum(stage.cost_usd for stage in stages), 8),
+        "latency_ms": round(sum(stage.duration_ms for stage in stages), 3),
+    }
+    budget = profile.reasoning_budget
+    checks = (
+        state["calls"] < budget.max_calls,
+        state["input_tokens"] < budget.max_input_tokens,
+        state["output_tokens"] < budget.max_output_tokens,
+        state["cost_usd"] < budget.max_cost_usd,
+        state["latency_ms"] < budget.max_latency_ms,
+    )
+    return all(checks), state

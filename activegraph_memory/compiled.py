@@ -100,6 +100,18 @@ class ListItemRecord:
     observed_at: str | None = None
 
 
+@dataclass(frozen=True)
+class MemoryConflictRecord:
+    conflict_id: str
+    claim_ids: tuple[str, ...]
+    state_key: str | None = None
+    reason: str = "incompatible_claims"
+    status: str = "unresolved"
+    confidence: float = 0.0
+    source_turn_ids: tuple[str, ...] = ()
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
 @dataclass
 class CompiledMemoryProjection:
     entities: list[MemoryEntityRecord] = field(default_factory=list)
@@ -108,7 +120,9 @@ class CompiledMemoryProjection:
     state_versions: list[StateVersionRecord] = field(default_factory=list)
     preferences: list[PreferenceEvidenceRecord] = field(default_factory=list)
     list_items: list[ListItemRecord] = field(default_factory=list)
+    conflicts: list[MemoryConflictRecord] = field(default_factory=list)
     current_state_by_key: dict[str, StateVersionRecord] = field(default_factory=dict)
     by_entity_id: dict[str, MemoryEntityRecord] = field(default_factory=dict)
     by_event_id: dict[str, CanonicalEventRecord] = field(default_factory=dict)
+    by_conflict_id: dict[str, MemoryConflictRecord] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)

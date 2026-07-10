@@ -9,16 +9,16 @@ class ActiveGraphMemorySettings(BaseModel):
     """Configuration for semantic and epistemic memory behavior."""
 
     enable_claim_extraction: bool = Field(
-        default=False,
-        description="Reserved for a future graph-visible claim extraction behavior.",
+        default=True,
+        description="Allow GraphMemoryRepository to extract claims when callers supply only source turns.",
     )
     enable_temporal_resolution: bool = Field(
-        default=False,
-        description="Reserved for a future graph-visible temporal normalization behavior.",
+        default=True,
+        description="Compile normalized event-time and valid-time references.",
     )
     enable_conflict_detection: bool = Field(
-        default=False,
-        description="Reserved for a future graph-visible conflict detection behavior.",
+        default=True,
+        description="Compile and materialize unresolved contradictions between claims.",
     )
     enable_gateway_integration: bool = Field(
         default=True,
@@ -98,3 +98,27 @@ class ActiveGraphMemorySettings(BaseModel):
         ge=0.0,
         description="Optional caller-supplied price used only for telemetry estimates.",
     )
+    adaptive_retrieval: bool | None = Field(
+        default=None,
+        description="Optional override for confidence-driven retrieval expansion.",
+    )
+    min_sufficiency_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    source_budget_ratio: float | None = Field(default=None, ge=0.1, le=1.0)
+    max_packet_rows: int | None = Field(default=None, ge=1, le=100)
+    candidate_answer_mode: str | None = Field(
+        default=None,
+        pattern=r"^(never|proof_complete|calibrated)$",
+    )
+    extraction_model: str | None = Field(
+        default=None,
+        description="Optional ActiveGraph LLM model for typed ingestion; unset uses deterministic fallback.",
+    )
+    reasoning_model: str | None = Field(
+        default=None,
+        description="Optional ActiveGraph LLM model used by enabled reasoning stages.",
+    )
+    max_reasoning_calls: int | None = Field(default=None, ge=0, le=20)
+    max_reasoning_input_tokens: int | None = Field(default=None, ge=0)
+    max_reasoning_output_tokens: int | None = Field(default=None, ge=0)
+    max_reasoning_cost_usd: float | None = Field(default=None, ge=0.0)
+    max_reasoning_latency_ms: float | None = Field(default=None, ge=0.0)

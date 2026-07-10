@@ -15,13 +15,17 @@ memory_candidate -> evaluation -> memory_item -> backend retrieval
 This package adds the higher-level path:
 
 ```text
-source log + accepted claims
-  -> typed compiled projection
+source log + accepted memory items
+  -> typed extraction or lossless deterministic fallback
+  -> replayable ActiveGraph source/claim projection
+  -> entities + events + state histories + preferences + conflicts
   -> multi-operator query IR
   -> hybrid candidate generation
   -> graph signal propagation
   -> deterministic operator execution
-  -> proof and coverage checks
+  -> confidence/proof assessment
+  -> targeted retrieval while coverage is insufficient
+  -> calibrated candidate + provenance-preserving context
   -> provenance-preserving context
 ```
 
@@ -96,6 +100,31 @@ present. Proof completion is structural, not a claim that the answer is
 semantically correct; readers must check every candidate against its cited rows
 and raw sources. Incomplete packets list their missing requirements.
 
+## Ingestion
+
+Raw source turns can be ingested without an API key. The deterministic fallback
+keeps one lossless fact per source turn, while a typed extractor can atomize
+facts and supply entities, predicates, modality, polarity, event time,
+quantities, state identity, preference scope, and confidence.
+
+```python
+from activegraph_memory import DeterministicMemoryExtractor, extract_claim_inputs
+
+claims, extraction = extract_claim_inputs(
+    [turn],
+    extractor=DeterministicMemoryExtractor(),
+)
+index = compile_memory_index(turns=[turn], claims=claims)
+```
+
+`ActiveGraphLLMMemoryExtractor` uses an ActiveGraph `LLMProvider` and a strict
+structured output schema. Unknown source IDs are rejected. Typed fields drive
+the compiler directly; they are not converted back to prose and guessed again.
+Extraction confidence and belief confidence are stored separately. Long
+histories are processed in stable, bounded batches (40 turns or 60,000 source
+characters by default), and the result reports aggregate tokens, cost, latency,
+cache state, and per-batch metadata.
+
 ## Compiled Memory
 
 `compile_memory_index` produces:
@@ -108,6 +137,7 @@ and raw sources. Incomplete packets list their missing requirements.
 - structured quantities with measure names and units
 - normalized temporal references
 - position-preserving list items
+- unresolved claim/state conflicts
 
 The compiler distinguishes actual, planned, hypothetical, and recommended
 events. It also distinguishes event time from observation time. Source turns
@@ -122,6 +152,10 @@ Counts use item cardinality, not just row count. Aggregates scan typed categorie
 and compatible actions, deduplicate canonical events, and verify source coverage.
 Temporal comparisons require one compatible dated event per operand. State
 queries inspect the version history and supersession state.
+
+Negative-existence queries run a bounded scan and report either positive
+counterevidence or "not found in the compiled accepted-memory scope." They do
+not convert retrieval failure into a claim about the outside world.
 
 ## Retrieval Signals
 
@@ -140,17 +174,19 @@ All optional reasoning stages use `off`, `fallback`, or `always`. `fallback`
 uses the deterministic result first and calls the reasoner only when confidence
 or proof completeness requires it.
 
-| Profile | Context budget | Rounds | Entity/event embeddings | Classification | Strategy | Retrieval analysis | Packaging |
-| --- | ---: | ---: | --- | --- | --- | --- | --- |
-| `fast` | 2,500 | 1 | off | off | off | off | off |
-| `balanced` | 4,000 | 2 | on | fallback | off | fallback | off |
-| `quality` | 6,000 | 2 | on | fallback | fallback | always | fallback |
-| `max_quality` | 10,000 | 3 | on | always | always | always | always |
+| Profile | Context | Rounds | Sufficiency | Source ratio | Entity/event vectors | Reasoning stages | Max calls / cost |
+| --- | ---: | ---: | ---: | ---: | --- | --- | ---: |
+| `fast` | 2,500 | 1 | 0.60 | 0.90 | off | all off | 0 / $0 |
+| `balanced` | 4,000 | 2 | 0.65 | 0.85 | on | classification/analysis fallback | 1 / $0.02 |
+| `quality` | 6,000 | 2 | 0.72 | 0.82 | on | mixed fallback/always | 2 / $0.08 |
+| `max_quality` | 10,000 | 3 | 0.78 | 0.82 | on | all always | 4 / $0.25 |
 
 Reasoning is optional even in a reasoning-enabled profile. Without a reasoner,
-the runtime remains deterministic. Reasoner failures fail open by default and
-are recorded in stage telemetry. Set `reasoning_fail_open=False` in a custom
-`MemoryRuntimeProfile` when a failed control-plane call should fail the query.
+the runtime remains deterministic. Before each optional call, the runtime checks
+cumulative call, token, provider-reported cost, and latency thresholds. A call's
+unknown final cost can cross a threshold; subsequent stages are then skipped and
+audited. Provider backends also cap output tokens per call. Reasoner failures
+fail open by default and are recorded in telemetry.
 
 Packaging reasoning may only prioritize or exclude IDs from the already selected
 evidence set. It cannot write or rewrite memory text. The final context is always
@@ -162,35 +198,56 @@ Profiles are Pydantic models and can be copied safely:
 from activegraph_memory import MemoryRuntime, runtime_profile
 
 profile = runtime_profile("balanced").model_copy(
-    update={"token_budget": 10_000, "include_raw_sources": True}
+    update={
+        "token_budget": 10_000,
+        "candidate_answer_mode": "calibrated",
+        "include_raw_sources": True,
+    }
 )
 runtime = MemoryRuntime(profile)
 ```
 
 Pack settings can override individual reasoning stages through
-`profile_from_settings(settings)`.
+`profile_from_settings(settings)`. Passing `settings=` to
+`GraphMemoryRepository.from_activegraph(...)` applies those profile overrides,
+provider model choices, and extraction/temporal/conflict switches directly.
 
 ## ActiveGraph Persistence
 
-`GraphMemoryRepository` materializes claims, entities, events, states,
-preferences, list items, quantities, temporal references, proofs, and measured
-retrieval stages as graph objects. Materialization uses stable keys, so replaying
-the same compile or retrieval trace is idempotent.
+`GraphMemoryRepository` materializes replayable source turns, claims, entities,
+events, states, preferences, conflicts, list items, quantities, temporal
+references, assessments, proofs, and measured retrieval stages. Stable keys
+make compile, append, load, and retrieval trace writes idempotent.
 
 ```python
 from activegraph import Graph, Runtime
-from activegraph_memory import GraphMemoryRepository, MemoryRuntime
+from activegraph_memory import GraphMemoryRepository
 
 graph = Graph(run_id="memory")
 activegraph_runtime = Runtime(graph, persist_to="sqlite:///memory-events.db")
-repository = GraphMemoryRepository(graph, runtime=MemoryRuntime("balanced"))
-repository.compile(turns=turns, claims=claims)
+repository = GraphMemoryRepository.from_activegraph(
+    activegraph_runtime,
+    profile="balanced",
+    extraction_model=None,  # deterministic fallback; set a model for typed LLM extraction
+    reasoning_model=None,
+    embedding_model="your-embedding-model",
+)
+repository.compile(turns=turns)
 result = repository.retrieve("What changed?", query_id="memory-query-object-id")
+
+# A new process can restore and continue from the graph event store.
+restarted = GraphMemoryRepository(graph)
+restarted.load()
+restarted.append(turns=new_turns)
 ```
 
-Durability is provided by the configured ActiveGraph store. The source log can
-be replayed after a crash to rebuild the same compiled objects. Retrieval proof
-and telemetry objects make completed stages auditable.
+Durability is provided by the configured ActiveGraph store. The repository can
+reconstruct its `MemoryIndex` from graph-visible source turns and claims after a
+crash. Appends rebuild stable projections and patch changed state histories
+without duplicating logical objects. The recovery boundary is a committed graph
+write: a crash during an uncommitted provider extraction retries that batch,
+while a committed `memory_ingestion_stage` and its facts load idempotently.
+Provider recording or caching is recommended when retry charges matter.
 
 Corpus embeddings can be process-local, SQLite-backed, or graph-backed:
 
@@ -211,16 +268,17 @@ hash of the embedded text, so changed text cannot silently reuse a stale vector.
 
 ## ActiveGraph Providers
 
-`MemoryRuntime.from_activegraph(...)` binds to ActiveGraph's configured LLM and
-embedding provider seams. The provider remains responsible for API credentials.
-Secrets are never written into graph objects, telemetry, fixtures, or prompts.
+`GraphMemoryRepository.from_activegraph(...)` binds typed extraction, staged
+reasoning, and fielded embeddings to ActiveGraph's configured providers.
+`MemoryRuntime.from_activegraph(...)` remains available for read-only use. The
+provider owns API credentials; secrets are never written into graph state.
 
 ## Benchmarking
 
-The benchmark API records end-to-end mean, p50, p95, cold, and warm latency;
-context tokens; input and output tokens; estimated provider cost; proof-complete
-rate; optional application quality; and per-stage latency, tokens, cost, cache
-state, and candidate counts.
+The benchmark APIs measure ingestion and retrieval separately. They report
+latency percentiles, context and provider tokens, cost, graph size, retrieval
+rounds, deterministic sufficiency, proof completion, candidate rendering,
+reasoner calls, optional quality, and per-stage invocation/latency/cost data.
 
 Run the committed offline fixture:
 
@@ -234,6 +292,24 @@ python3.11 -m activegraph_memory.benchmark_cli \
   --format markdown
 ```
 
+A fixed-budget deterministic option matrix is available from the CLI:
+
+```bash
+python3.11 -m activegraph_memory.benchmark_cli \
+  --input examples/benchmark_fixture.json \
+  --base-profile quality \
+  --option-matrix \
+  --repetitions 100 \
+  --hash-embeddings \
+  --score-expected
+```
+
+For live reasoning, use `benchmark_reasoning_ablations(...)` with a
+`runtime_factory` that attaches the same provider/model to each ablation. It
+isolates classification, strategy, analysis, packaging, all-stage, and no-stage
+policies while recording provider-reported usage. `benchmark_ingestion(...)`
+does the same for extraction, compilation, and optional graph materialization.
+
 See [docs/benchmark-results.md](docs/benchmark-results.md) for the latest
 reproducible control-plane result and its limitations. For live embeddings or
 reasoning, use `benchmark_profiles(..., runtime_factory=...)` so the report
@@ -241,12 +317,13 @@ includes provider-reported tokens and caller-supplied pricing.
 
 ## Pack Surface
 
-The pack registers 21 object types, 14 relation types, two deterministic
+The pack registers 25 object types, 14 relation types, two deterministic
 behaviors, and three tools. The main additions are:
 
 - `memory_entity`, `memory_event`, `memory_state`, `memory_preference`
-- `memory_query_analysis`, `memory_proof`, `memory_retrieval_stage`
+- `memory_query_analysis`, `memory_proof`, `memory_ingestion_stage`, `memory_retrieval_stage`
 - `memory_embedding`, `memory_benchmark`
+- `memory_source_turn`, `memory_conflict`, `memory_retrieval_assessment`
 - `memory_about`, `memory_grounded_in`, `memory_version_of`
 - `memory_stage_for`, `memory_proves`
 

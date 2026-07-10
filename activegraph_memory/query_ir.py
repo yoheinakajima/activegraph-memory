@@ -246,7 +246,15 @@ def _expected_answer_type(operators: list[MemoryOperator]) -> str:
 
 
 def _proof_requirements(operators: list[MemoryOperator], operands: list[str]) -> list[str]:
-    requirements = ["source_provenance", "entity_compatibility"]
+    if "negative_existence" in operators:
+        requirements = [
+            "entity_compatibility",
+            "bounded_candidate_set",
+            "source_coverage",
+            "absence_certificate",
+        ]
+    else:
+        requirements = ["source_provenance", "entity_compatibility"]
     if any(op in {"count", "sum", "max"} for op in operators):
         requirements.extend(
             [

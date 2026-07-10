@@ -1,6 +1,6 @@
 # Roadmap
 
-## Implemented In 0.2
+## Implemented Through 0.3
 
 - deterministic source-turn and claim compilation
 - typed entities, event mentions, canonical events, state histories,
@@ -19,27 +19,34 @@
 - SQLite and ActiveGraph embedding persistence
 - deterministic profile benchmark API and CLI
 - LongMemEval adapter with resumable retrieval artifacts in the companion repo
+- provider-neutral typed extraction plus deterministic raw-turn fallback
+- typed compiler overrides for entities, predicates, modality, event time,
+  quantities, state identity, preference scope, and confidence
+- replayable source-turn, conflict, and retrieval-assessment graph objects
+- replayable ingestion-stage objects with source scope and provider usage
+- graph-to-index restart reconstruction and append with stable projection refresh
+- deterministic sufficiency assessment and confidence-driven targeted rounds
+- calibrated candidate rendering and explicit source-context budget ratios
+- cumulative reasoning call/token/cost/latency budgets
+- bounded negative-existence certificates
+- deterministic option matrices, reasoning ablations, and ingestion benchmarks
 
 ## Near-Term Work
 
-### Extraction Contracts
+### Extraction Quality
 
-- define a provider-neutral typed extraction response for events, entities,
-  state properties, quantities, and time basis
 - calibrate extraction coverage against raw-source scans
-- add incremental compilation when one source event is appended
 - connect accepted `memory_gateway` items without adapter-specific conversion
 
 ### Belief Maintenance
 
 - replace topic-key supersession with typed subject/property identity
-- add explicit contradiction objects and resolution policies
-- separate source authority, extraction confidence, and belief confidence
+- add configurable conflict resolution policies and authority-weighted resolution
+- calibrate source authority, extraction confidence, and belief confidence
 - support bitemporal valid-time and transaction-time queries
 
 ### Query Execution
 
-- add negative-existence executor with a bounded search certificate
 - add relational multi-hop joins over entities and episodes
 - add units and currency conversion through an explicit conversion provider
 - add query-aware list identity for multiple similar lists from one source
@@ -47,7 +54,6 @@
 
 ### Durability
 
-- reconstruct `MemoryIndex` directly from materialized graph objects
 - add incremental graph embedding invalidation for changed source text
 - add retrieval-run identities for concurrent attempts of the same query
 - document retention and deletion semantics for graph-stored vectors

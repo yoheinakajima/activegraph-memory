@@ -1,12 +1,34 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 - Renamed compiled answer labels from `Verified candidate` / `Tentative
   candidate` to `Proof-complete candidate` / `Incomplete candidate`.
 - Clarified that proof completion certifies the presence of operator-required
   evidence fields, not semantic answer correctness; readers must still verify
   candidates against cited sources.
+- Added provider-neutral typed extraction with deterministic and ActiveGraph LLM
+  backends. Structured entities, predicates, modality, polarity, event time,
+  quantities, state identity, preference scope, and confidence now drive the
+  compiler instead of being discarded and re-inferred from text.
+- Added replayable `memory_source_turn`, `memory_conflict`,
+  `memory_ingestion_stage`, and `memory_retrieval_assessment` graph objects.
+- Added graph-to-index reconstruction, repository restart/load, append with
+  deterministic stable projection refresh, and graph-visible conflict links.
+- Added deterministic sufficiency assessment and confidence-driven targeted
+  retrieval rounds with explicit stop reasons and query traces.
+- Added calibrated candidate rendering, per-profile source budget ratios, and
+  bounded negative-existence certificates.
+- Added cumulative reasoning stop thresholds for calls, tokens,
+  provider-reported cost, and latency, checked before each optional stage.
+- Added deterministic option matrices, reasoning-stage ablations, and ingestion
+  benchmarks with latency, tokens, cost, graph size, rounds, sufficiency, proof,
+  and candidate-render metrics.
+- Wired pack settings into the repository facade so extraction, temporal
+  normalization, conflict detection, profile overrides, and provider models
+  change runtime behavior rather than remaining declarative only.
+- Added bounded long-history extraction batches with aggregate and per-batch
+  usage telemetry, plus restart-safe graph-visible ingestion runs.
 
 ## 0.2.0
 
