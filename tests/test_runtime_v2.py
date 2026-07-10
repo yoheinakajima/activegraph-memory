@@ -119,6 +119,121 @@ def test_canonical_events_merge_repeated_mentions_but_not_new_events():
     assert sorted(len(event.mention_ids) for event in events) == [1, 2]
 
 
+def test_canonicalization_does_not_bridge_distinct_quantities_through_generic_claim():
+    turns = [
+        _turn(
+            "luxury",
+            0,
+            0,
+            "user",
+            "I bought H&M tees for $20 and high-end designer boots for $500.",
+            "2023-05-28",
+        )
+    ]
+    claims = [
+        ExtractedClaimInput(
+            "The user swings between luxury and budget-friendly purchases.",
+            "luxury",
+            "2023-05-28",
+            0,
+            "user",
+            (0,),
+        ),
+        ExtractedClaimInput(
+            "The user bought H&M tees for $20.",
+            "luxury",
+            "2023-05-28",
+            0,
+            "user",
+            (0,),
+        ),
+        ExtractedClaimInput(
+            "The user bought high-end designer boots for $500.",
+            "luxury",
+            "2023-05-28",
+            0,
+            "user",
+            (0,),
+        ),
+    ]
+
+    index = compile_memory_index(turns=turns, claims=claims)
+    priced = [
+        event
+        for event in index.compiled.canonical_events
+        if any(quantity.get("unit") == "usd" for quantity in event.quantities)
+    ]
+
+    assert len(priced) == 2
+    assert sorted(quantity["value"] for event in priced for quantity in event.quantities) == [20.0, 500.0]
+
+
+def test_luxury_sum_uses_specific_category_instead_of_all_clothing():
+    turns = [
+        _turn("a", 0, 0, "user", "I bought a Gucci handbag for $1,200.", "2023-05-24"),
+        _turn("b", 1, 0, "user", "I bought a luxury gown for $800.", "2023-05-25"),
+        _turn("c", 2, 0, "user", "I bought designer boots for $500 and H&M tees for $20.", "2023-05-26"),
+    ]
+    claims = [
+        ExtractedClaimInput("The user bought a Gucci handbag for $1,200.", "a", "2023-05-24", 0, "user", (0,)),
+        ExtractedClaimInput("The user bought a luxury gown for $800.", "b", "2023-05-25", 1, "user", (0,)),
+        ExtractedClaimInput("The user bought designer boots for $500.", "c", "2023-05-26", 2, "user", (0,)),
+        ExtractedClaimInput("The user bought H&M tees for $20.", "c", "2023-05-26", 2, "user", (0,)),
+    ]
+    index = compile_memory_index(turns=turns, claims=claims)
+
+    result = MemoryRuntime("fast").retrieve(index, "How much did I spend on luxury items?")
+
+    assert result.metadata["compiled_evidence"]["candidate_answer"] == "$2500"
+
+
+def test_relative_time_lookup_prioritizes_nearby_claims():
+    turns = [
+        _turn("milestone", 0, 0, "user", "I signed my first client contract today.", "2023-03-01"),
+        _turn("distractor", 1, 0, "user", "I replaced my bathroom mat three weeks ago.", "2023-02-21"),
+    ]
+    claims = [
+        ExtractedClaimInput("The user signed a contract with their first client today.", "milestone", "2023-03-01", 0, "user", (0,)),
+        ExtractedClaimInput("The user replaced their bathroom mat three weeks ago.", "distractor", "2023-02-21", 1, "user", (0,)),
+    ]
+    index = compile_memory_index(turns=turns, claims=claims)
+
+    result = MemoryRuntime("balanced").retrieve(
+        index,
+        "What business milestone did I mention four weeks ago?",
+        question_date="2023-03-28",
+    )
+
+    rows = result.metadata["compiled_evidence"]["rows"]
+    assert rows
+    assert "first client" in rows[0]["claim"]
+
+
+def test_user_memory_query_filters_assistant_events_across_retrieval_paths():
+    turns = [
+        _turn("user-bike", 0, 0, "user", "I bought a road bike yesterday.", "2023-03-01"),
+        _turn("assistant-bike", 1, 0, "assistant", "I bought a mountain bike yesterday.", "2023-03-01"),
+    ]
+    claims = [
+        ExtractedClaimInput("The user bought a road bike yesterday.", "user-bike", "2023-03-01", 0, "user", (0,)),
+        ExtractedClaimInput(
+            "The assistant bought a mountain bike yesterday.",
+            "assistant-bike",
+            "2023-03-01",
+            1,
+            "assistant",
+            (0,),
+        ),
+    ]
+    index = compile_memory_index(turns=turns, claims=claims)
+
+    result = MemoryRuntime("quality").retrieve(index, "How many bikes did I buy?")
+
+    assert result.metadata["compiled_evidence"]["candidate_answer"] == "1"
+    assert "assistant-bike#0" not in result.selected_turn_ids
+    assert "mountain bike" not in result.context_text
+
+
 def test_runtime_answers_snapshot_count_from_current_state():
     result = MemoryRuntime("fast").retrieve(
         _index(),

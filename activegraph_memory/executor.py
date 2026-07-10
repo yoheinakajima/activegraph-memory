@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 import re
 from typing import Any
@@ -14,6 +14,7 @@ from .taxonomy import (
     category_mentions,
     infer_category_ids,
     infer_predicate,
+    most_specific_categories,
     predicates_compatible,
 )
 
@@ -305,10 +306,11 @@ def _execute_aggregate(index: MemoryIndex, analysis: QueryAnalysis, signals: Ret
     category_constraints = _aggregate_category_constraints(analysis.query)
     query_predicate = infer_predicate(analysis.query)
     candidates = []
-    for event in index.compiled.canonical_events:
-        if analysis.completed_only and event.modality != "actual":
+    for canonical_event in index.compiled.canonical_events:
+        event = _event_for_source_roles(index, canonical_event, set(analysis.source_roles))
+        if event is None:
             continue
-        if not set(event.metadata.get("roles") or ()) & set(analysis.source_roles):
+        if analysis.completed_only and event.modality != "actual":
             continue
         if not _not_after_anchor(event.metadata.get("observed_at"), analysis):
             continue
@@ -503,10 +505,11 @@ def _execute_temporal(index: MemoryIndex, analysis: QueryAnalysis, signals: Retr
     for operand in operands:
         operand_tokens = claim_tokens(operand)
         candidates = []
-        for event in index.compiled.canonical_events:
-            if not event.event_start or event.modality != "actual":
+        for canonical_event in index.compiled.canonical_events:
+            event = _event_for_source_roles(index, canonical_event, set(analysis.source_roles))
+            if event is None:
                 continue
-            if not set(event.metadata.get("roles") or ()) & set(analysis.source_roles):
+            if not event.event_start or event.modality != "actual":
                 continue
             if not _not_after_anchor(event.metadata.get("observed_at"), analysis):
                 continue
@@ -562,6 +565,8 @@ def _execute_temporal(index: MemoryIndex, analysis: QueryAnalysis, signals: Retr
 def _execute_lookup(index: MemoryIndex, analysis: QueryAnalysis, signals: RetrievalSignals) -> CompiledEvidence:
     q_tokens = set(analysis.entity_terms) or claim_tokens(analysis.query)
     scored = []
+    temporal_query = bool(analysis.time_start or analysis.time_end)
+    relative_query = bool(re.search(r"\b(?:ago|last|previous|yesterday)\b", analysis.query, re.IGNORECASE))
     for record in index.claims:
         if record.claim.metadata.get("role") not in analysis.source_roles:
             continue
@@ -569,7 +574,13 @@ def _execute_lookup(index: MemoryIndex, analysis: QueryAnalysis, signals: Retrie
             continue
         lexical = _overlap(q_tokens, claim_tokens(record.text))
         dense = signals.claim_scores.get(record.claim_id, 0.0)
-        score = (0.7 * dense) + (0.3 * lexical)
+        temporal_distance = _claim_window_distance(record, analysis)
+        if temporal_query and temporal_distance is None:
+            continue
+        if temporal_query and temporal_distance > (1 if relative_query else 0):
+            continue
+        temporal_score = 1.0 / (1.0 + float(temporal_distance or 0)) if temporal_query else 0.0
+        score = (0.58 * dense) + (0.24 * lexical) + (0.3 * temporal_score)
         if score > 0:
             scored.append((score, record.sort_key, record))
     scored.sort(key=lambda item: (-item[0], item[1], item[2].claim_id))
@@ -582,6 +593,7 @@ def _execute_lookup(index: MemoryIndex, analysis: QueryAnalysis, signals: Retrie
         selected_claim_ids=[record.claim_id for record in picked],
         selected_turn_ids=[turn_id for record in picked for turn_id in record.source_turn_ids],
         confidence=min(0.9, scored[0][0] + 0.1) if scored else 0.0,
+        metadata={"temporal_query": temporal_query, "relative_tolerance_days": 1 if relative_query else 0},
     )
 
 
@@ -612,7 +624,7 @@ def _not_after_anchor(value: str | None, analysis: QueryAnalysis) -> bool:
 def _aggregate_category_constraints(query: str) -> set[str]:
     categories = set(infer_category_ids(query))
     specific = categories - {"expense", "event", "vehicle"}
-    return specific or categories
+    return most_specific_categories(specific or categories)
 
 
 def _event_category_items(event, category_constraints: set[str]) -> list[str]:
@@ -637,6 +649,52 @@ def _event_cardinality(event, category_constraints: set[str], query_tokens: set[
             return max(1, int(float(value)))
     items = _event_category_items(event, category_constraints)
     return max(1, len(items))
+
+
+def _event_for_source_roles(index: MemoryIndex, event, source_roles: set[str]):
+    """Return a role-scoped canonical event without cross-role evidence leakage."""
+
+    records = [
+        index.by_claim_id[claim_id]
+        for claim_id in event.claim_ids
+        if claim_id in index.by_claim_id
+        and index.by_claim_id[claim_id].claim.metadata.get("role") in source_roles
+    ]
+    if not records:
+        return None
+    quantities = []
+    seen_quantities: set[tuple] = set()
+    for record in records:
+        for quantity in record.quantity_claims:
+            signature = (quantity.value, quantity.unit, quantity.property_name)
+            if signature in seen_quantities:
+                continue
+            seen_quantities.add(signature)
+            quantities.append(quantity.model_dump())
+    source_turn_ids = tuple(
+        dict.fromkeys(
+            turn_id
+            for record in records
+            for turn_id in record.source_turn_ids
+            if turn_id in index.by_turn_id and index.by_turn_id[turn_id].role in source_roles
+        )
+    )
+    categories = tuple(
+        dict.fromkeys(
+            category_id
+            for record in records
+            for category_id in infer_category_ids(record.text)
+        )
+    )
+    return replace(
+        event,
+        summary=records[0].text,
+        category_ids=categories,
+        claim_ids=tuple(record.claim_id for record in records),
+        source_turn_ids=source_turn_ids,
+        quantities=tuple(quantities),
+        metadata={**event.metadata, "roles": sorted(source_roles)},
+    )
 
 
 def _aggregate_source_coverage(
@@ -719,6 +777,34 @@ def _parse_date(value: str | None) -> date | None:
         return date.fromisoformat(value[:10].replace("/", "-"))
     except ValueError:
         return None
+
+
+def _claim_window_distance(record, analysis: QueryAnalysis) -> int | None:
+    start = _parse_date(analysis.time_start)
+    end = _parse_date(analysis.time_end)
+    if start is None and end is None:
+        return 0
+    dates = [
+        parsed
+        for parsed in (
+            _parse_date(record.claim.observed_at),
+            *(
+                _parse_date(ref.resolved_start or ref.resolved_end)
+                for ref in record.temporal_refs
+            ),
+        )
+        if parsed is not None
+    ]
+    if not dates:
+        return None
+    lower = start or end
+    upper = end or start
+    assert lower is not None and upper is not None
+    distances = [
+        0 if lower <= candidate <= upper else min(abs((candidate - lower).days), abs((candidate - upper).days))
+        for candidate in dates
+    ]
+    return min(distances)
 
 
 def _overlap(query_tokens: set[str], document_tokens: set[str]) -> float:

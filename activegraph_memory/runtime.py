@@ -31,6 +31,7 @@ from .reasoning import (
 )
 from .retrieval import MemoryRetrievalResult, retrieve_memory
 from .telemetry import PipelineTelemetry, StageTelemetry
+from .taxonomy import expanded_query_variants
 
 
 TokenCounter = Callable[[str], int]
@@ -263,6 +264,7 @@ class MemoryRuntime:
                 max_claims_per_session=self.profile.max_claims_per_session if self.profile.use_diversity_selection else None,
                 max_direct_turns_per_session=self.profile.max_direct_turns_per_session if self.profile.use_diversity_selection else None,
                 enable_preference_packet=False,
+                allowed_source_roles=set(analysis.source_roles),
             )
             if packet:
                 result.context_text = f"{packet}\n\n{result.context_text}" if result.context_text else packet
@@ -316,6 +318,7 @@ class MemoryRuntime:
                         enable_preference_packet=False,
                         exclude_claim_ids=drop_claims,
                         exclude_turn_ids=drop_sources,
+                        allowed_source_roles=set(analysis.source_roles),
                     )
                     if packet:
                         result.context_text = f"{packet}\n\n{result.context_text}" if result.context_text else packet
@@ -410,6 +413,7 @@ class MemoryRuntime:
 
 def _targeted_variants(analysis: QueryAnalysis) -> list[str]:
     out = [analysis.query]
+    out.extend(expanded_query_variants(analysis.query))
     for operand in analysis.operands:
         out.append(f"{analysis.primary_operator} {operand}")
     if analysis.requires_exhaustive_coverage and analysis.entity_terms:

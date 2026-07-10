@@ -402,6 +402,7 @@ def retrieve_memory(
     enable_preference_packet: bool = True,
     exclude_claim_ids: set[str] | None = None,
     exclude_turn_ids: set[str] | None = None,
+    allowed_source_roles: set[str] | None = None,
 ) -> MemoryRetrievalResult:
     """Retrieve and assemble provenance-backed evidence for a memory query.
 
@@ -433,6 +434,7 @@ def retrieve_memory(
         temporal_targets=temporal_targets,
         assistant_exact_source=assistant_exact_source,
         preference_advice_query=preference_advice_query,
+        allowed_source_roles=allowed_source_roles,
     )
     scored_turns = _score_turns(
         index.turns,
@@ -442,9 +444,16 @@ def retrieve_memory(
         temporal_targets=temporal_targets,
         assistant_exact_source=assistant_exact_source,
         preference_advice_query=preference_advice_query,
+        allowed_source_roles=allowed_source_roles,
     )
 
-    candidates = _rank_candidates(index, scored_claims, scored_turns, query_type=query_type)
+    candidates = _rank_candidates(
+        index,
+        scored_claims,
+        scored_turns,
+        query_type=query_type,
+        allowed_source_roles=allowed_source_roles,
+    )
     graph_result = None
     if enable_graph_query and not assistant_exact_source:
         graph_result = run_graph_query(
@@ -452,6 +461,7 @@ def retrieve_memory(
             memory_query.query,
             query_type=query_type,
             anchor_time=memory_query.time_anchor,
+            allowed_source_roles=allowed_source_roles,
         )
     effective_token_budget = _effective_token_budget(token_budget, query_type=query_type, graph_result=graph_result)
     selected_claim_ids: list[str] = []
@@ -543,6 +553,7 @@ def retrieve_memory(
             temporal_targets=temporal_targets,
             turn_scores=scored_turns,
             max_turns=8,
+            allowed_source_roles=allowed_source_roles,
         )
         if temporal_target_context:
             temporal_target_cost = token_counter(temporal_target_context) + 2
@@ -709,6 +720,7 @@ def retrieve_memory(
             "preference_packet_enabled": enable_preference_packet,
             "excluded_claim_ids": sorted(exclude_claim_ids),
             "excluded_turn_ids": sorted(exclude_turn_ids),
+            "allowed_source_roles": sorted(allowed_source_roles or []),
             "temporal_target_context_rendered": temporal_target_context_rendered,
             "dynamic_expansion": dynamic_expansion,
             "dynamic_added_claim_ids": dynamic_added_claim_ids,
@@ -777,6 +789,7 @@ def retrieve_memory(
             "preference_packet_enabled": enable_preference_packet,
             "excluded_claim_ids": sorted(exclude_claim_ids),
             "excluded_turn_ids": sorted(exclude_turn_ids),
+            "allowed_source_roles": sorted(allowed_source_roles or []),
             "token_budget": effective_token_budget,
             "requested_token_budget": token_budget,
             "adaptive_budget_applied": effective_token_budget != token_budget,
@@ -811,10 +824,14 @@ def _score_claims(
     temporal_targets: list[date],
     assistant_exact_source: bool,
     preference_advice_query: bool,
+    allowed_source_roles: set[str] | None,
 ) -> dict[str, float]:
     q_tokens = _salient_query_tokens(query)
     out: dict[str, float] = {}
     for record in claims:
+        if allowed_source_roles and record.claim.metadata.get("role") not in allowed_source_roles:
+            out[record.claim_id] = 0.0
+            continue
         lexical = _token_overlap(q_tokens, claim_tokens(record.text))
         external = _positive_cosine(external_scores.get(record.claim_id, 0.0))
         phrase = _phrase_overlap_score(query, record.text)
@@ -855,10 +872,14 @@ def _score_turns(
     temporal_targets: list[date],
     assistant_exact_source: bool,
     preference_advice_query: bool,
+    allowed_source_roles: set[str] | None,
 ) -> dict[str, float]:
     q_tokens = _salient_query_tokens(query)
     out: dict[str, float] = {}
     for turn in turns:
+        if allowed_source_roles and turn.role not in allowed_source_roles:
+            out[turn.turn_id] = 0.0
+            continue
         lexical = _token_overlap(q_tokens, _salient_query_tokens(turn.text))
         external = _positive_cosine(external_scores.get(turn.turn_id, 0.0))
         phrase = _phrase_overlap_score(query, turn.text)
@@ -890,15 +911,20 @@ def _rank_candidates(
     turn_scores: dict[str, float],
     *,
     query_type: str,
+    allowed_source_roles: set[str] | None,
 ) -> list[_Candidate]:
     candidates: list[_Candidate] = []
     for record in index.claims:
+        if allowed_source_roles and record.claim.metadata.get("role") not in allowed_source_roles:
+            continue
         score = claim_scores.get(record.claim_id, 0.0)
         # Claims are the semantic index. Give anchored claims a slight edge,
         # but do not let orphan headers dominate raw source turns.
         score += 0.08 if record.source_turn_ids else 0.01
         candidates.append(_Candidate("claim", record.claim_id, score, record.sort_key))
     for turn in index.turns:
+        if allowed_source_roles and turn.role not in allowed_source_roles:
+            continue
         score = turn_scores.get(turn.turn_id, 0.0)
         if query_type in {"lookup", "semantic_lookup", "temporal"}:
             score += 0.03
@@ -1294,6 +1320,7 @@ def _render_temporal_target_packet(
     temporal_targets: list[date],
     turn_scores: dict[str, float],
     max_turns: int = 8,
+    allowed_source_roles: set[str] | None = None,
 ) -> str:
     """Render a compact source packet for relative/explicit date lookups.
 
@@ -1309,7 +1336,7 @@ def _render_temporal_target_packet(
     query_tokens = _salient_query_tokens(query)
     candidates: list[tuple[float, int, tuple, SourceTurn]] = []
     for turn in index.turns:
-        if turn.role != "user":
+        if allowed_source_roles and turn.role not in allowed_source_roles:
             continue
         source_date = _parse_source_date(turn.session_date)
         if source_date is None:

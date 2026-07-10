@@ -376,6 +376,15 @@ def _canonicalize_events(index, mentions: list[EventMentionRecord]) -> list[Cano
         object_set = set(object_tokens)
         key = ""
         for candidate_key, tokens in group_tokens.items():
+            group_quantities = set().union(
+                *(
+                    _quantity_signatures(index.by_claim_id[prior.claim_id].quantity_claims)
+                    for prior in groups[candidate_key]
+                )
+            )
+            mention_quantities = _quantity_signatures(record.quantity_claims)
+            if mention_quantities and group_quantities and not mention_quantities & group_quantities:
+                continue
             if any(
                 _mentions_can_merge(index, mention, prior, object_set, tokens)
                 for prior in groups[candidate_key]
@@ -484,7 +493,7 @@ def _mentions_can_merge(
     shared_categories = set(left.category_ids) & set(right.category_ids)
     meaningful_categories = shared_categories - {"expense", "event", "vehicle"}
     similarity = _jaccard(left_tokens, group_tokens)
-    if shared_turn:
+    if shared_turn and similarity >= 0.2 and (shared_entity or meaningful_categories):
         return True
     if shared_entity and similarity >= 0.24:
         return True

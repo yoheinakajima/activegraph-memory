@@ -148,6 +148,7 @@ _CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
         "checkup",
     ),
     "home": ("home", "apartment", "kitchen", "room", "furniture", "appliance", "smoker", "sofa"),
+    "luxury": ("luxury", "high-end", "designer", "gucci", "prada", "chanel", "versace"),
     "music": ("music", "album", "song", "concert", "playlist", "guitar", "piano"),
     "plant": (
         "plant",
@@ -161,7 +162,18 @@ _CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
         "snake plant",
         "pothos",
     ),
-    "project": ("project", "repo", "repository", "launch", "prototype", "roadmap", "milestone"),
+    "project": (
+        "project",
+        "repo",
+        "repository",
+        "launch",
+        "prototype",
+        "roadmap",
+        "milestone",
+        "contract",
+        "client",
+        "deal",
+    ),
     "travel": ("travel", "trip", "flight", "hotel", "airbnb", "museum", "train", "airport"),
     "vehicle": (
         "car",
@@ -175,6 +187,33 @@ _CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
         "ford",
         "mustang",
         "f-150",
+    ),
+}
+
+_CATEGORY_PARENTS = {
+    "luxury": "clothing",
+}
+
+_QUERY_CONCEPT_EXPANSIONS: dict[str, tuple[str, ...]] = {
+    "milestone": (
+        "accomplishment",
+        "achievement",
+        "achieved",
+        "award",
+        "client",
+        "completed",
+        "contract",
+        "deal",
+        "finished",
+        "funding",
+        "launched",
+        "opened",
+        "partnership",
+        "promotion",
+        "reached",
+        "sale",
+        "signed",
+        "started",
     ),
 }
 
@@ -272,6 +311,32 @@ def category_mentions(text: str, category_id: str) -> tuple[str, ...]:
     specific = [match for match in matches if normalize_token(match) != normalize_token(label)]
     values = specific or matches
     return tuple(dict.fromkeys(values))
+
+
+def most_specific_categories(category_ids) -> set[str]:
+    """Remove a broad parent when a matched child category is available."""
+
+    values = set(category_ids)
+    return {
+        category_id
+        for category_id in values
+        if not any(_CATEGORY_PARENTS.get(child) == category_id for child in values)
+    }
+
+
+def expanded_query_variants(text: str) -> tuple[str, ...]:
+    """Return deterministic semantic bridge queries for broad concepts."""
+
+    tokens = significant_tokens(text)
+    expansions = [
+        expansion
+        for concept, values in _QUERY_CONCEPT_EXPANSIONS.items()
+        if normalize_token(concept) in tokens
+        for expansion in values
+    ]
+    if not expansions:
+        return ()
+    return (f"{text} {' '.join(expansions)}",)
 
 
 def infer_predicate(text: str) -> str:

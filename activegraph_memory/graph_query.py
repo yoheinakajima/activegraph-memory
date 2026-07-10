@@ -14,6 +14,7 @@ from .taxonomy import (
     category_label,
     infer_category_ids,
     infer_predicate,
+    most_specific_categories,
     normalize_token,
     predicates_compatible,
     significant_tokens,
@@ -147,6 +148,7 @@ _EVENT_GENERIC_MATCH_TOKENS = {
 _GENERIC_MATCH_TOKENS = {
     "ago",
     "all",
+    "amount",
     "before",
     "after",
     "and",
@@ -421,6 +423,7 @@ def run_graph_query(
     *,
     query_type: str,
     anchor_time: str | None = None,
+    allowed_source_roles: set[str] | None = None,
 ) -> GraphQueryResult | None:
     """Run an executable graph query when the plan calls for one."""
 
@@ -457,6 +460,12 @@ def run_graph_query(
         query_predicate=query_predicate,
         time_window=time_window,
     )
+    if allowed_source_roles:
+        matched = [
+            event
+            for event in matched
+            if str(event.metadata.get("role") or "") in allowed_source_roles
+        ]
     matched = _dedupe_events(matched)
 
     if operation == "order":
@@ -1600,7 +1609,9 @@ def _required_query_categories(category_ids: tuple[str, ...]) -> tuple[str, ...]
         for category_id in category_ids
         if category_id not in _AUXILIARY_CATEGORIES
     )
-    return required or category_ids
+    selected = required or category_ids
+    specific = most_specific_categories(selected)
+    return tuple(category_id for category_id in selected if category_id in specific)
 
 
 def _specific_query_tokens(query: str, inferred_categories: tuple[str, ...]) -> set[str]:
