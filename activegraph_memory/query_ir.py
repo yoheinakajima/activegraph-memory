@@ -107,11 +107,28 @@ _RECOMMEND_RE = re.compile(r"\b(recommend|suggest|advice|tips?|what should i)\b"
 _NEGATIVE_RE = re.compile(r"\b(never|did not|didn't|no record|have i not|hasn't|has not)\b", re.IGNORECASE)
 _ORDINAL_RE = re.compile(r"\b(?P<value>\d{1,3})(?:st|nd|rd|th)\b", re.IGNORECASE)
 _ASSISTANT_SOURCE_RE = re.compile(
-    r"\b(?:you|assistant)\b.*\b(?:said|provided|listed|recommended|suggested|gave)\b|"
-    r"\blist (?:you|the assistant) provided\b",
+    r"\b(?:you|assistant)\b.*\b(?:say|said|mention|mentioned|tell|told|provide|provided|"
+    r"list|listed|recommend|recommended|suggest|suggested|give|gave|name|named|call|called|"
+    r"assign|assigned|write|wrote|send|sent|show|showed|share|shared|compute|computed|"
+    r"calculate|calculated)\b|"
+    r"\b(?:say|said|mention|mentioned|tell|told|provide|provided|list|listed|recommend|"
+    r"recommended|suggest|suggested|give|gave|name|named|call|called|assign|assigned|write|"
+    r"wrote|send|sent|show|showed|share|shared)\b.*\b(?:you|assistant)\b|"
+    r"\blist (?:you|the assistant) provided\b|"
+    r"\bremind me\b.*\b(?:our|we|you|your|previous|earlier|prior|last time)\b|"
+    r"\b(?:our|previous|earlier|prior)\b.*\b(?:chat|conversation|discussion)\b.*\bremind me\b",
     re.IGNORECASE,
 )
-_PERSONAL_MEMORY_RE = re.compile(r"\b(?:i|me|my|mine|we|us|our|ours)\b", re.IGNORECASE)
+_USER_SOURCE_RE = re.compile(
+    r"\b(?:i|we)\s+(?:(?:am|are|was|were|have been|had been)\s+)?(?:currently\s+)?"
+    r"(?:attended|bought|purchased|spent|used|visited|went|flew|finished|completed|fixed|"
+    r"serviced|received|redeemed|downloaded|worked|working|signed|started|launched|said|"
+    r"mentioned|told|met|spoke|talked|discussed|preferred|liked|disliked|owned|have|had)\b|"
+    r"\b(?:did|do|have|had|am|was|were)\s+(?:i|we)\s+(?:attend|buy|purchase|spend|use|"
+    r"visit|go|finish|complete|fix|service|receive|redeem|download|work|sign|start|launch|"
+    r"say|mention|tell|meet|speak|talk|discuss|prefer|like|dislike|own|have)\b",
+    re.IGNORECASE,
+)
 _ACTUAL_RE = re.compile(
     r"\b(attended|bought|purchased|spent|used|visited|went|flew|finished|completed|"
     r"fixed|serviced|received|redeemed|downloaded|worked on|added)\b",
@@ -152,6 +169,8 @@ def analyze_query(
             operators.append(operator)  # type: ignore[arg-type]
     if "date_delta" in operators:
         operators = [operator for operator in operators if operator not in {"count", "sum"}]
+    if "order" in operators:
+        operators = [operator for operator in operators if operator not in {"latest", "current", "previous"}]
     if not operators:
         operators.append("lookup")
 
@@ -161,9 +180,13 @@ def analyze_query(
         if token not in _GENERIC_TERMS and not token.isdigit()
     )
     operands = _comparison_operands(text) if any(op in {"order", "date_delta"} for op in operators) else []
-    if _ASSISTANT_SOURCE_RE.search(text) or "ordinal" in operators:
+    assistant_source = bool(_ASSISTANT_SOURCE_RE.search(text))
+    user_source = bool(_USER_SOURCE_RE.search(text))
+    if "ordinal" in operators:
         source_roles = ["assistant"]
-    elif _PERSONAL_MEMORY_RE.search(text):
+    elif assistant_source and not user_source:
+        source_roles = ["assistant"]
+    elif user_source and not assistant_source:
         source_roles = ["user"]
     else:
         source_roles = ["user", "assistant"]
@@ -199,6 +222,11 @@ def analyze_query(
         metadata={
             "time_anchor": anchor,
             "ordinal": int(_ORDINAL_RE.search(text).group("value")) if _ORDINAL_RE.search(text) else None,
+            "source_role_signals": {
+                "assistant": assistant_source,
+                "user": user_source,
+                "ambiguous": assistant_source == user_source,
+            },
         },
     )
 

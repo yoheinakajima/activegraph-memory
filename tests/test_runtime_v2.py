@@ -75,6 +75,16 @@ def test_query_analysis_is_multi_operator_and_proof_oriented():
     assert analysis.time_start == "2023-01-30"
     assert "bounded_candidate_set" in analysis.proof_requirements
     assert "canonical_event_deduplication" in analysis.proof_requirements
+    assert analyze_query("Order the visits from earliest to latest").operators == ["order"]
+
+
+def test_query_analysis_uses_ambiguous_roles_instead_of_personal_pronoun_shortcut():
+    assert analyze_query("What restaurant did you recommend last time?").source_roles == ["assistant"]
+    assert analyze_query(
+        "I was looking back at our previous conversation. Can you remind me of the designer handle?"
+    ).source_roles == ["assistant"]
+    assert analyze_query("How many weddings have I attended?").source_roles == ["user"]
+    assert analyze_query("What was the dessert shop from our old trip?").source_roles == ["user", "assistant"]
 
 
 def test_quantity_parser_rejects_models_dates_ordinals_and_years():
@@ -232,6 +242,117 @@ def test_user_memory_query_filters_assistant_events_across_retrieval_paths():
     assert result.metadata["compiled_evidence"]["candidate_answer"] == "1"
     assert "assistant-bike#0" not in result.selected_turn_ids
     assert "mountain bike" not in result.context_text
+
+
+def test_completed_event_count_does_not_use_numeric_state_snapshot():
+    turns = [
+        _turn("age", 0, 0, "user", "I am 32 years old.", "2023-01-01"),
+        _turn("w1", 1, 0, "user", "I attended Rachel's wedding.", "2023-02-01"),
+        _turn("w2", 2, 0, "user", "I attended Sam's wedding.", "2023-03-01"),
+    ]
+    claims = [
+        ExtractedClaimInput("The user is 32 years old.", "age", "2023-01-01", 0, "user", (0,)),
+        ExtractedClaimInput("The user attended Rachel's wedding.", "w1", "2023-02-01", 1, "user", (0,)),
+        ExtractedClaimInput("The user attended Sam's wedding.", "w2", "2023-03-01", 2, "user", (0,)),
+    ]
+
+    result = MemoryRuntime("fast").retrieve(
+        compile_memory_index(turns=turns, claims=claims),
+        "How many weddings have I attended?",
+    )
+
+    assert result.metadata["compiled_evidence"]["operation"] == "aggregate/count"
+    assert result.metadata["compiled_evidence"]["candidate_answer"] == "2"
+
+
+def test_current_state_prefers_recent_explicit_transition():
+    turns = [
+        _turn("old", 0, 0, "user", "I am working on a Ford Mustang model.", "2023-05-20"),
+        _turn(
+            "new",
+            1,
+            0,
+            "user",
+            "I wrapped up that model and switched to a Ford F-150 pickup truck model.",
+            "2023-05-26",
+        ),
+    ]
+    claims = [
+        ExtractedClaimInput("The user is working on a Ford Mustang model.", "old", "2023-05-20", 0, "user", (0,)),
+        ExtractedClaimInput("The user owns a Ford F-150 pickup truck model.", "new", "2023-05-26", 1, "user", (0,)),
+    ]
+
+    result = MemoryRuntime("fast").retrieve(
+        compile_memory_index(turns=turns, claims=claims),
+        "What vehicle model am I currently working on?",
+    )
+
+    assert "F-150" in result.metadata["compiled_evidence"]["candidate_answer"]
+    assert result.metadata["compiled_evidence"]["metadata"]["top_transition_score"] == 1.0
+
+
+def test_temporal_operands_resolve_from_source_durations():
+    turns = [
+        _turn(
+            "festival",
+            0,
+            0,
+            "user",
+            "I attended a cultural festival in my hometown yesterday.",
+            "2023-05-27",
+        ),
+        _turn(
+            "classes",
+            1,
+            0,
+            "user",
+            "I've been taking Spanish classes for the past three months.",
+            "2023-05-27",
+        ),
+    ]
+    claims = [
+        ExtractedClaimInput("The user attended a cultural festival yesterday.", "festival", "2023-05-27", 0, "user", (0,)),
+        ExtractedClaimInput("The user has taken Spanish classes for three months.", "classes", "2023-05-27", 1, "user", (0,)),
+    ]
+
+    result = MemoryRuntime("fast").retrieve(
+        compile_memory_index(turns=turns, claims=claims),
+        "Which happened first, attendance at a cultural festival or the start of my Spanish classes?",
+    )
+
+    evidence = result.metadata["compiled_evidence"]
+    assert evidence["candidate_answer"].startswith("start of my Spanish classes")
+    assert [row["date"] for row in evidence["rows"]] == ["2023-02-26", "2023-05-26"]
+
+
+def test_source_timeline_orders_named_entities_and_excludes_other_venue_types():
+    names = [
+        ("Science Museum", "2023-01-01"),
+        ("Museum of Contemporary Art", "2023-01-08"),
+        ("Metropolitan Museum of Art", "2023-01-15"),
+        ("Museum of History", "2023-01-22"),
+        ("Modern Art Museum", "2023-01-29"),
+        ("Natural History Museum", "2023-02-05"),
+        ("Modern Art Gallery", "2023-01-10"),
+    ]
+    turns = [
+        _turn(f"s{idx}", idx, 0, "user", f"I visited the {name} today.", observed)
+        for idx, (name, observed) in enumerate(names)
+    ]
+    claims = [
+        ExtractedClaimInput(f"The user visited the {name}.", f"s{idx}", observed, idx, "user", (0,))
+        for idx, (name, observed) in enumerate(names)
+    ]
+
+    result = MemoryRuntime("fast").retrieve(
+        compile_memory_index(turns=turns, claims=claims),
+        "What is the order of the six museums I visited from earliest to latest?",
+    )
+
+    evidence = result.metadata["compiled_evidence"]
+    assert evidence["metadata"]["source_timeline"] is True
+    assert [row["entity"] for row in evidence["rows"]] == [name for name, _ in names[:6]]
+    assert "Gallery" not in evidence["candidate_answer"]
 
 
 def test_runtime_answers_snapshot_count_from_current_state():

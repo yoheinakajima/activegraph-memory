@@ -418,7 +418,10 @@ def retrieve_memory(
     plan = retrieval_plan or plan_query(memory_query, query_id=query_id)
     query_type = str(plan.metadata.get("query_type", memory_query.query_type))
     token_counter = token_counter or _rough_token_count
-    assistant_exact_source = _requires_assistant_exact_source(memory_query.query)
+    assistant_exact_source = (
+        _requires_assistant_exact_source(memory_query.query)
+        or allowed_source_roles == {"assistant"}
+    )
     preference_advice_query = _looks_like_preference_or_advice_query(memory_query.query, query_type=query_type)
     candidate_core_terms = _answer_packet_core_terms(memory_query.query)
 

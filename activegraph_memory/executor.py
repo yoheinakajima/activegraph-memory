@@ -7,15 +7,18 @@ from datetime import date
 import re
 from typing import Any
 
-from .compiler import MemoryIndex, claim_tokens, extract_quantity_claims
+from .compiler import MemoryIndex, SourceTurn, claim_tokens, extract_quantity_claims
 from .query_ir import QueryAnalysis
 from .ranking import RetrievalSignals
+from .temporal import extract_temporal_refs
 from .taxonomy import (
     category_mentions,
+    expanded_query_variants,
     infer_category_ids,
     infer_predicate,
     most_specific_categories,
     predicates_compatible,
+    significant_tokens,
 )
 
 
@@ -70,7 +73,15 @@ class CompiledEvidence:
     def render(self, *, max_rows: int = 16) -> str:
         if not self.rows and not self.candidate_answer:
             return ""
-        lines = [f"[compiled-memory: {self.operation}]", "Evidence is source-grounded; verify any incomplete proof against raw sources."]
+        lines = [
+            f"[compiled-memory: {self.operation}]",
+            "Evidence is source-grounded; verify any incomplete proof against raw sources.",
+            "Reader contract: use a Verified candidate unless its cited raw source contradicts it; check a Tentative candidate before use.",
+        ]
+        if any("temporal_distance_days" in row for row in self.rows):
+            lines.append(
+                "For approximate relative time, apply temporal-distance tolerance and semantic fit; calendar-day equality alone is not decisive."
+            )
         if self.candidate_answer:
             label = "Verified candidate" if self.proof_complete else "Tentative candidate"
             lines.append(f"{label}: {self.candidate_answer}")
@@ -183,6 +194,15 @@ def _execute_ordinal(index: MemoryIndex, analysis: QueryAnalysis, signals: Retri
 def _execute_state(index: MemoryIndex, analysis: QueryAnalysis, signals: RetrievalSignals) -> CompiledEvidence:
     scored = []
     q_tokens = set(analysis.entity_terms) or claim_tokens(analysis.query)
+    eligible_dates = [
+        parsed
+        for state in index.compiled.state_versions
+        if state.metadata.get("role") in analysis.source_roles
+        and _not_after_anchor(state.observed_at, analysis)
+        for parsed in (_parse_date(state.observed_at),)
+        if parsed is not None
+    ]
+    newest_observation = max(eligible_dates) if eligible_dates else None
     for state in index.compiled.state_versions:
         if state.metadata.get("role") not in analysis.source_roles:
             continue
@@ -190,13 +210,15 @@ def _execute_state(index: MemoryIndex, analysis: QueryAnalysis, signals: Retriev
             continue
         lexical = _overlap(q_tokens, claim_tokens(state.value_text))
         dense = signals.state_scores.get(state.state_id, 0.0)
-        score = (0.62 * dense) + (0.38 * lexical)
+        transition = _state_transition_score(index, state)
+        recency = _state_recency_score(state.observed_at, newest_observation)
+        score = (0.52 * dense) + (0.3 * lexical) + (0.32 * transition) + (0.18 * recency)
         if score <= 0:
             continue
-        scored.append((score, state.observed_at or "", state))
+        scored.append((score, state.observed_at or "", state, transition, recency))
     scored.sort(key=lambda item: (-item[0], item[1], item[2].state_id))
     top_keys = []
-    for _, _, state in scored:
+    for _, _, state, _, _ in scored:
         if state.state_key not in top_keys:
             top_keys.append(state.state_key)
         if len(top_keys) >= 3:
@@ -225,7 +247,7 @@ def _execute_state(index: MemoryIndex, analysis: QueryAnalysis, signals: Retriev
     if analysis.primary_operator == "previous" and len(best_versions) >= 2:
         selected = best_versions[-2:-1]
     candidate = selected[0].value_text if selected else None
-    confidence = min(0.92, scored[0][0] + 0.15) if scored else 0.0
+    confidence = min(0.92, scored[0][0] + 0.12) if scored else 0.0
     satisfied = ["source_provenance", "entity_compatibility"]
     if versions:
         satisfied.extend(["state_history", "supersession_check"])
@@ -237,7 +259,12 @@ def _execute_state(index: MemoryIndex, analysis: QueryAnalysis, signals: Retriev
         selected_claim_ids=[state.source_claim_id for state in selected if state.source_claim_id],
         selected_turn_ids=[turn_id for state in selected for turn_id in state.source_turn_ids],
         confidence=confidence,
-        metadata={"matched_state_keys": top_keys, "versions": len(versions)},
+        metadata={
+            "matched_state_keys": top_keys,
+            "versions": len(versions),
+            "top_transition_score": scored[0][3] if scored else 0.0,
+            "top_recency_score": scored[0][4] if scored else 0.0,
+        },
     )
 
 
@@ -299,8 +326,37 @@ def _execute_preferences(index: MemoryIndex, analysis: QueryAnalysis, signals: R
     )
 
 
+def _state_transition_score(index: MemoryIndex, state) -> float:
+    source_text = " ".join(
+        index.by_turn_id[turn_id].content
+        for turn_id in state.source_turn_ids
+        if turn_id in index.by_turn_id
+    )
+    if re.search(
+        r"\b(?:switched to|changed to|moved to|replaced .+ with|no longer|wrapped up|"
+        r"just (?:started|finished|completed|changed|switched)|now (?:working|using|building|driving|owning))\b",
+        source_text,
+        re.IGNORECASE,
+    ):
+        return 1.0
+    if re.search(r"\b(?:currently|now|latest|new|current)\b", source_text, re.IGNORECASE):
+        return 0.55
+    return 0.0
+
+
+def _state_recency_score(observed_at: str | None, newest: date | None) -> float:
+    observed = _parse_date(observed_at)
+    if observed is None or newest is None:
+        return 0.0
+    return 1.0 / (1.0 + max(0, (newest - observed).days))
+
+
 def _execute_aggregate(index: MemoryIndex, analysis: QueryAnalysis, signals: RetrievalSignals) -> CompiledEvidence:
-    if analysis.primary_operator == "count" and _SNAPSHOT_COUNT_RE.search(analysis.query):
+    if (
+        analysis.primary_operator == "count"
+        and _SNAPSHOT_COUNT_RE.search(analysis.query)
+        and infer_predicate(analysis.query) == "state"
+    ):
         return _execute_state_snapshot_count(index, analysis, signals)
     q_tokens = set(analysis.entity_terms) or claim_tokens(analysis.query)
     category_constraints = _aggregate_category_constraints(analysis.query)
@@ -344,7 +400,12 @@ def _execute_aggregate(index: MemoryIndex, analysis: QueryAnalysis, signals: Ret
                 for quantity in event.quantities
             ],
             "sources": ",".join(event.source_turn_ids[:3]),
-            "count_contribution": _event_cardinality(event, category_constraints, q_tokens),
+            "count_contribution": _event_cardinality(
+                event,
+                category_constraints,
+                q_tokens,
+                query_predicate=query_predicate,
+            ),
             "matched_items": _event_category_items(event, category_constraints),
         }
         for event in sorted(selected, key=lambda event: (event.event_start or "", event.event_id))
@@ -352,7 +413,15 @@ def _execute_aggregate(index: MemoryIndex, analysis: QueryAnalysis, signals: Ret
     candidate_answer = None
     if analysis.primary_operator == "count" and selected:
         candidate_answer = str(
-            sum(_event_cardinality(event, category_constraints, q_tokens) for event in selected)
+            sum(
+                _event_cardinality(
+                    event,
+                    category_constraints,
+                    q_tokens,
+                    query_predicate=query_predicate,
+                )
+                for event in selected
+            )
         )
     elif analysis.primary_operator == "sum":
         values = [
@@ -496,13 +565,36 @@ def _execute_state_snapshot_count(
 
 
 def _execute_temporal(index: MemoryIndex, analysis: QueryAnalysis, signals: RetrievalSignals) -> CompiledEvidence:
+    if analysis.primary_operator == "order" and not analysis.operands:
+        timeline = _execute_source_timeline(index, analysis, signals)
+        if timeline.rows:
+            return timeline
     rows = []
     found_operands: list[str] = []
     selected_events = []
+    selected_source_turn_ids: list[str] = []
+    selected_dates: list[tuple[str, str]] = []
     operands = analysis.operands or [analysis.query]
     query_predicate = infer_predicate(analysis.query)
     predicate_matches: list[bool] = []
     for operand in operands:
+        source_candidate = _source_operand_candidate(index, operand, analysis, signals)
+        if source_candidate is not None:
+            source_date, turn = source_candidate
+            found_operands.append(operand)
+            selected_source_turn_ids.append(turn.turn_id)
+            selected_dates.append((operand, source_date))
+            predicate_matches.append(True)
+            rows.append(
+                {
+                    "operand": operand,
+                    "date": source_date,
+                    "event": turn.content,
+                    "source": turn.turn_id,
+                    "evidence_kind": "source_turn",
+                }
+            )
+            continue
         operand_tokens = claim_tokens(operand)
         candidates = []
         for canonical_event in index.compiled.canonical_events:
@@ -527,16 +619,19 @@ def _execute_temporal(index: MemoryIndex, analysis: QueryAnalysis, signals: Retr
         compatible, _, _, _, event = candidates[0]
         found_operands.append(operand)
         selected_events.append((operand, event))
+        selected_dates.append((operand, event.event_start))
         predicate_matches.append(compatible)
-    selected_events.sort(key=lambda item: (item[1].event_start or "", item[1].event_id))
+    rows.sort(key=lambda row: (row.get("date") or "", row.get("source") or ""))
     for operand, event in selected_events:
         rows.append({"operand": operand, "date": event.event_start, "event": event.summary, "source": event.source_turn_ids[0] if event.source_turn_ids else None})
+    rows.sort(key=lambda row: (row.get("date") or "", row.get("source") or ""))
+    selected_dates.sort(key=lambda item: (item[1], item[0]))
     candidate = None
-    if analysis.primary_operator == "order" and len(selected_events) == len(operands) and len(operands) >= 2:
-        candidate = " -> ".join(operand for operand, _ in selected_events)
-    elif analysis.primary_operator == "date_delta" and len(selected_events) >= 2:
-        first = _parse_date(selected_events[0][1].event_start)
-        last = _parse_date(selected_events[-1][1].event_start)
+    if analysis.primary_operator == "order" and len(selected_dates) == len(operands) and len(operands) >= 2:
+        candidate = " -> ".join(operand for operand, _ in selected_dates)
+    elif analysis.primary_operator == "date_delta" and len(selected_dates) >= 2:
+        first = _parse_date(selected_dates[0][1])
+        last = _parse_date(selected_dates[-1][1])
         if first and last:
             candidate = f"{abs((last - first).days)} days"
     satisfied = ["source_provenance"]
@@ -550,7 +645,7 @@ def _execute_temporal(index: MemoryIndex, analysis: QueryAnalysis, signals: Retr
         candidate_answer=candidate,
         satisfied_requirements=satisfied,
         selected_claim_ids=[claim_id for _, event in selected_events for claim_id in event.claim_ids],
-        selected_turn_ids=[turn_id for _, event in selected_events for turn_id in event.source_turn_ids],
+        selected_turn_ids=selected_source_turn_ids + [turn_id for _, event in selected_events for turn_id in event.source_turn_ids],
         selected_event_ids=[event.event_id for _, event in selected_events],
         confidence=0.88 if candidate else (0.58 if rows else 0.0),
         metadata={
@@ -562,8 +657,222 @@ def _execute_temporal(index: MemoryIndex, analysis: QueryAnalysis, signals: Retr
     )
 
 
+_SOURCE_EVENT_ACTION_RE = re.compile(
+    r"\b(?:i|we)\s+(?:actually\s+|recently\s+|just\s+)?(?:visited|attended|participated|"
+    r"took|went|saw|finished|completed|started|began|signed|bought|purchased|received|"
+    r"returned|came back)\b",
+    re.IGNORECASE,
+)
+_TEMPORAL_OPERAND_GENERIC = {
+    "attendance",
+    "begin",
+    "beginning",
+    "event",
+    "happen",
+    "happened",
+    "start",
+    "started",
+}
+_COUNT_WORDS = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+}
+_VENUE_PATTERNS = {
+    "museum": re.compile(
+        r"\b(?:(?:[A-Z][A-Za-z'’-]*\s+){0,4}Museum(?:'s|\s+of(?:\s+[A-Z][A-Za-z'’-]*){1,4})?)\b"
+    ),
+    "gallery": re.compile(
+        r"\b(?:(?:[A-Z][A-Za-z'’-]*\s+){0,4}Gallery(?:'s|\s+of(?:\s+[A-Z][A-Za-z'’-]*){1,4})?)\b"
+    ),
+}
+
+
+def _source_operand_candidate(
+    index: MemoryIndex,
+    operand: str,
+    analysis: QueryAnalysis,
+    signals: RetrievalSignals,
+) -> tuple[str, SourceTurn] | None:
+    operand_tokens = claim_tokens(operand)
+    specific = operand_tokens - _TEMPORAL_OPERAND_GENERIC
+    candidates: list[tuple[float, str, tuple, SourceTurn]] = []
+    for turn in index.turns:
+        if turn.role not in analysis.source_roles:
+            continue
+        if not _not_after_anchor(turn.session_date, analysis):
+            continue
+        turn_tokens = claim_tokens(turn.content)
+        if specific and not specific & turn_tokens:
+            continue
+        lexical = _overlap(operand_tokens, turn_tokens)
+        if lexical <= 0.0:
+            continue
+        event_date = _turn_event_date(turn, operand)
+        if event_date is None:
+            continue
+        score = signals.turn_scores.get(turn.turn_id, 0.0) + lexical
+        if _SOURCE_EVENT_ACTION_RE.search(turn.content):
+            score += 0.2
+        candidates.append((score, event_date, turn.sort_key, turn))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (-item[0], item[1], item[2], item[3].turn_id))
+    _, event_date, _, turn = candidates[0]
+    return event_date, turn
+
+
+def _execute_source_timeline(
+    index: MemoryIndex,
+    analysis: QueryAnalysis,
+    signals: RetrievalSignals,
+) -> CompiledEvidence:
+    query_lower = analysis.query.lower()
+    heads = [head for head in _VENUE_PATTERNS if re.search(rf"\b{head}s?\b", query_lower)]
+    if not heads:
+        return CompiledEvidence(operation="temporal/order")
+    query_categories = most_specific_categories(infer_category_ids(analysis.query))
+    query_tokens = claim_tokens(analysis.query)
+    by_entity: dict[str, tuple[float, str, SourceTurn, str]] = {}
+    for turn in index.turns:
+        if turn.role not in analysis.source_roles or not _SOURCE_EVENT_ACTION_RE.search(turn.content):
+            continue
+        if not _not_after_anchor(turn.session_date, analysis):
+            continue
+        if query_categories and not query_categories & set(infer_category_ids(turn.content)):
+            continue
+        labels = _timeline_entity_labels(turn.content, heads)
+        for label in labels:
+            event_date = _turn_event_date(turn, label)
+            if event_date is None:
+                continue
+            key = re.sub(r"[^a-z0-9]+", " ", label.lower()).strip()
+            score = signals.turn_scores.get(turn.turn_id, 0.0) + _overlap(query_tokens, claim_tokens(turn.content))
+            prior = by_entity.get(key)
+            if prior is None or event_date < prior[1] or (event_date == prior[1] and score > prior[0]):
+                by_entity[key] = (score, event_date, turn, label)
+    expected = _expected_timeline_count(analysis.query)
+    ranked = sorted(by_entity.values(), key=lambda item: (-item[0], item[1], item[3].lower()))
+    if expected:
+        ranked = ranked[:expected]
+    selected = sorted(ranked, key=lambda item: (item[1], item[2].sort_key, item[3].lower()))
+    rows = [
+        {
+            "position": position,
+            "date": event_date,
+            "entity": label,
+            "event": turn.content,
+            "source": turn.turn_id,
+            "evidence_kind": "source_timeline",
+        }
+        for position, (_, event_date, turn, label) in enumerate(selected, start=1)
+    ]
+    complete = bool(selected) and (expected is None or len(selected) == expected)
+    satisfied = ["source_provenance", "entity_compatibility", "event_time_resolution"] if selected else []
+    if complete and len(selected) >= 2:
+        satisfied.extend(["operand_coverage", "all_operands_found"])
+    return CompiledEvidence(
+        operation="temporal/order",
+        rows=rows,
+        candidate_answer=" -> ".join(item[3] for item in selected) if len(selected) >= 2 else None,
+        satisfied_requirements=satisfied,
+        selected_turn_ids=[item[2].turn_id for item in selected],
+        confidence=0.9 if complete and len(selected) >= 2 else (0.62 if selected else 0.0),
+        metadata={
+            "source_timeline": True,
+            "entity_heads": heads,
+            "expected_count": expected,
+            "matched_entities": len(selected),
+        },
+    )
+
+
+def _timeline_entity_labels(text: str, heads: list[str]) -> list[str]:
+    labels: list[str] = []
+    parts = re.split(r"(?<=[.!?])\s+", text)
+    for position, part in enumerate(parts):
+        if not _SOURCE_EVENT_ACTION_RE.search(part):
+            continue
+        local = _venue_labels_in_text(part, heads)
+        if not local:
+            for prior in reversed(parts[:position]):
+                local = _venue_labels_in_text(prior, heads)
+                if local:
+                    break
+        labels.extend(local)
+    return list(dict.fromkeys(labels))
+
+
+def _venue_labels_in_text(text: str, heads: list[str]) -> list[str]:
+    labels = []
+    for head in heads:
+        for match in _VENUE_PATTERNS[head].finditer(text):
+            label = re.sub(r"'s$", "", match.group(0).strip())
+            if label.lower() not in {head, f"the {head}"}:
+                labels.append(label)
+    return labels
+
+
+def _expected_timeline_count(query: str) -> int | None:
+    match = re.search(
+        r"\b(?P<count>\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b"
+        r"\s+(?:[a-z]+\s+){0,2}(?:museum|gallery|event|place|trip|visit)s?\b",
+        query,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    value = match.group("count").lower()
+    return int(value) if value.isdigit() else _COUNT_WORDS.get(value)
+
+
+def _turn_event_date(turn: SourceTurn, subject: str) -> str | None:
+    refs = extract_temporal_refs(turn.content, anchor_time=turn.session_date)
+    if refs:
+        subject_tokens = claim_tokens(subject) - _TEMPORAL_OPERAND_GENERIC
+        start_intent = bool(re.search(r"\b(?:start|started|begin|began|beginning)\b", subject, re.IGNORECASE))
+        scored = []
+        for ref in refs:
+            value = ref.resolved_start if start_intent else (ref.resolved_end or ref.resolved_start)
+            if not value:
+                continue
+            sentence = next(
+                (
+                    part
+                    for part in re.split(r"(?<=[.!?])\s+", turn.content)
+                    if ref.text.lower() in part.lower()
+                ),
+                turn.content,
+            )
+            same_sentence = bool(subject_tokens & claim_tokens(sentence))
+            action_sentence = bool(_SOURCE_EVENT_ACTION_RE.search(sentence))
+            score = float(ref.confidence) + (0.45 if same_sentence else 0.0) + (0.2 if action_sentence else 0.0)
+            scored.append((score, value))
+        if scored:
+            return max(scored, key=lambda item: (item[0], item[1]))[1]
+    observed = _parse_date(turn.session_date)
+    return observed.isoformat() if observed else None
+
+
 def _execute_lookup(index: MemoryIndex, analysis: QueryAnalysis, signals: RetrievalSignals) -> CompiledEvidence:
-    q_tokens = set(analysis.entity_terms) or claim_tokens(analysis.query)
+    base_query_tokens = set(analysis.entity_terms) or claim_tokens(analysis.query)
+    base_bridge_tokens = significant_tokens(analysis.query)
+    q_tokens = set(base_query_tokens)
+    bridge_tokens: set[str] = set()
+    for variant in expanded_query_variants(analysis.query):
+        variant_tokens = claim_tokens(variant)
+        bridge_tokens.update(significant_tokens(variant) - base_bridge_tokens)
+        q_tokens.update(variant_tokens)
+    query_categories = most_specific_categories(infer_category_ids(analysis.query))
     scored = []
     temporal_query = bool(analysis.time_start or analysis.time_end)
     relative_query = bool(re.search(r"\b(?:ago|last|previous|yesterday)\b", analysis.query, re.IGNORECASE))
@@ -579,21 +888,60 @@ def _execute_lookup(index: MemoryIndex, analysis: QueryAnalysis, signals: Retrie
             continue
         if temporal_query and temporal_distance > (1 if relative_query else 0):
             continue
-        temporal_score = 1.0 / (1.0 + float(temporal_distance or 0)) if temporal_query else 0.0
-        score = (0.58 * dense) + (0.24 * lexical) + (0.3 * temporal_score)
+        temporal_score = (
+            1.0
+            if temporal_query and relative_query and temporal_distance <= 1
+            else (1.0 / (1.0 + float(temporal_distance or 0)) if temporal_query else 0.0)
+        )
+        category_match = bool(query_categories & set(infer_category_ids(record.text)))
+        bridge_hits = len(bridge_tokens & significant_tokens(record.text))
+        bridge_score = min(0.36, 0.12 * bridge_hits)
+        score = (
+            (0.54 * dense)
+            + (0.24 * lexical)
+            + (0.3 * temporal_score)
+            + (0.28 if category_match else 0.0)
+            + bridge_score
+        )
         if score > 0:
-            scored.append((score, record.sort_key, record))
+            scored.append((score, record.sort_key, record, bridge_hits, category_match, temporal_distance))
     scored.sort(key=lambda item: (-item[0], item[1], item[2].claim_id))
     picked = [item[2] for item in scored[:6]]
-    rows = [{"claim": record.text, "date": record.claim.observed_at, "sources": ",".join(record.source_turn_ids)} for record in picked]
+    rows = [
+        {
+            "claim": item[2].text,
+            "date": item[2].claim.observed_at,
+            "sources": ",".join(item[2].source_turn_ids),
+            "concept_bridge_hits": item[3],
+            "temporal_distance_days": item[5] if temporal_query else None,
+        }
+        for item in scored[:6]
+    ]
+    candidate = None
+    if (
+        scored
+        and relative_query
+        and scored[0][3] >= 2
+        and scored[0][4]
+        and scored[0][5] is not None
+        and scored[0][5] <= 1
+    ):
+        candidate = scored[0][2].text
     return CompiledEvidence(
         operation="lookup",
         rows=rows,
+        candidate_answer=candidate,
         satisfied_requirements=["source_provenance", "entity_compatibility"] if picked else [],
         selected_claim_ids=[record.claim_id for record in picked],
         selected_turn_ids=[turn_id for record in picked for turn_id in record.source_turn_ids],
         confidence=min(0.9, scored[0][0] + 0.1) if scored else 0.0,
-        metadata={"temporal_query": temporal_query, "relative_tolerance_days": 1 if relative_query else 0},
+        metadata={
+            "temporal_query": temporal_query,
+            "relative_tolerance_days": 1 if relative_query else 0,
+            "query_categories": sorted(query_categories),
+            "bridge_tokens": sorted(bridge_tokens),
+            "candidate_rule": "relative_time+category+two_concept_bridges" if candidate else None,
+        },
     )
 
 
@@ -637,7 +985,13 @@ def _event_category_items(event, category_constraints: set[str]) -> list[str]:
     )
 
 
-def _event_cardinality(event, category_constraints: set[str], query_tokens: set[str]) -> int:
+def _event_cardinality(
+    event,
+    category_constraints: set[str],
+    query_tokens: set[str],
+    *,
+    query_predicate: str,
+) -> int:
     for quantity in event.quantities:
         value = quantity.get("value")
         if value is None or quantity.get("unit") == "usd":
@@ -647,6 +1001,8 @@ def _event_cardinality(event, category_constraints: set[str], query_tokens: set[
         )
         if unit_tokens & query_tokens:
             return max(1, int(float(value)))
+    if query_predicate not in {"purchase", "acquire", "donate"}:
+        return 1
     items = _event_category_items(event, category_constraints)
     return max(1, len(items))
 

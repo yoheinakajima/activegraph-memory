@@ -274,7 +274,7 @@ def _entity_names(text: str, metadata: dict) -> list[str]:
     out.extend(match.group(1).strip() for match in _QUOTED_ENTITY_RE.finditer(text))
     for match in _CAPITALIZED_ENTITY_RE.finditer(text):
         value = match.group(0).strip(" .,'\"")
-        if value in _ENTITY_BLOCKLIST or len(value) < 2:
+        if value in _ENTITY_BLOCKLIST or value.lower() == "s" or len(value) < 2:
             continue
         if value.lower().startswith(("the user", "the assistant")):
             continue
@@ -478,6 +478,7 @@ def _mentions_can_merge(
     right_claim = index.by_claim_id[right.claim_id]
     left_quantities = _quantity_signatures(left_claim.quantity_claims)
     right_quantities = _quantity_signatures(right_claim.quantity_claims)
+    shared_entity = bool(set(left.entity_ids) & set(right.entity_ids))
     if left_quantities and right_quantities and not left_quantities & right_quantities:
         return False
     left_proxy = left.metadata.get("time_basis") == "observed_time_proxy"
@@ -485,11 +486,12 @@ def _mentions_can_merge(
     if left.event_start and right.event_start and left.event_start != right.event_start:
         if not left_proxy and not right_proxy:
             return False
+        if not shared_entity and not (left_quantities & right_quantities):
+            return False
     if re.search(r"\b(?:another|additional|again|second|third)\b", left.text, re.IGNORECASE):
         if not set(left.source_turn_ids) & set(right.source_turn_ids):
             return False
     shared_turn = bool(set(left.source_turn_ids) & set(right.source_turn_ids))
-    shared_entity = bool(set(left.entity_ids) & set(right.entity_ids))
     shared_categories = set(left.category_ids) & set(right.category_ids)
     meaningful_categories = shared_categories - {"expense", "event", "vehicle"}
     similarity = _jaccard(left_tokens, group_tokens)

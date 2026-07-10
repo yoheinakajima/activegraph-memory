@@ -112,3 +112,19 @@ Important switches include:
 - `reasoning_fail_open`
 
 Every switch is enforced by `MemoryRuntime`; none is documentation-only.
+
+## Reader Contract
+
+`MemoryRuntime.retrieve()` may prepend a `[compiled-memory: ...]` proof packet.
+Consumers should preserve its labels when passing context to an answer model:
+
+- `Verified candidate` is a deterministic result over the packet's cited rows.
+  Use it unless a cited raw source contradicts it.
+- `Tentative candidate` is a ranking aid and must be checked against the rows
+  and raw sources.
+- `temporal_distance_days` is an accepted distance under the query's explicit
+  tolerance. For approximate relative-time language, semantic fit inside that
+  tolerance outranks calendar-day equality by itself.
+
+This contract is provider-neutral. It does not ask the answer model to invent
+facts, and every candidate remains traceable to claim and source-turn ids.
