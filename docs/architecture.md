@@ -1,8 +1,8 @@
 # Architecture
 
-`activegraph-memory` is the semantic memory layer above ActiveGraph Core and `memory_gateway`.
+## Boundaries
 
-Core remains the universal substrate:
+ActiveGraph Core remains the event-sourced substrate:
 
 ```text
 source -> observation -> memory_candidate -> evaluation
@@ -11,69 +11,132 @@ source -> observation -> memory_candidate -> evaluation
 `memory_gateway` remains the durable memory lifecycle and backend seam:
 
 ```text
-memory_candidate -> memory_item -> memory_retrieval_request -> memory_retrieval
+accepted memory_candidate -> memory_item -> backend retrieval
 ```
 
-This pack adds the epistemic layer:
+`activegraph-memory` compiles accepted, source-grounded information into a
+typed query projection. It does not write around candidate evaluation and does
+not redefine Core object or provenance types.
+
+## Data Planes
+
+The system has three explicit data planes.
+
+1. The source plane contains the immutable event log, source turns,
+   observations, and accepted claims.
+2. The compiled plane contains derived entities, event mentions, canonical
+   events, state versions, preferences, quantities, temporal references, and
+   list items.
+3. The query plane contains query analysis, retrieval plans, measured stages,
+   evidence, coverage, and proof objects.
+
+The compiled and query planes are replayable projections. They are not more
+authoritative than their sources.
+
+## Compile Pipeline
 
 ```text
-memory_query -> retrieval_plan -> evidence_bundle -> coverage_report -> memory_answer
-      |               |                  |
-      |               |                  -> memory_used_as_evidence
-      |               -> memory_gateway_request metadata
-      -> memory_has_temporal_ref
+source turns + claims
+  -> provenance anchoring
+  -> entity and category extraction
+  -> quantity and temporal parsing
+  -> modality and polarity classification
+  -> event mention compilation
+  -> canonical event deduplication
+  -> state history and supersession compilation
+  -> preference/profile facets
+  -> list position extraction
 ```
 
-The standalone runtime also compiles a queryable projection from the event log:
+Canonical event identity uses compatible actions, category overlap, entity
+overlap, quantities, event time, observation time, and semantic token overlap.
+Two explicitly dated events at different times remain distinct. A later
+restatement with only observation time may merge into an earlier explicitly
+dated event when the object and quantity evidence agree.
+
+## Query Pipeline
 
 ```text
-source_turns + extracted_claims
-       -> memory_claim records
-       -> entity refs + category refs + memory_event rows
-       -> graph query reducers
-       -> evidence-packed context
+memory_query
+  -> deterministic multi-operator query IR
+  -> optional classification reasoning
+  -> deterministic retrieval strategy
+  -> optional strategy reasoning
+  -> lexical + fielded embedding candidates
+  -> reciprocal-rank fusion
+  -> entity-to-neighbor graph propagation
+  -> typed operator executor
+  -> proof requirement evaluation
+  -> optional sufficiency analysis and targeted retrieval
+  -> deterministic source packaging
+  -> optional evidence-ID prioritization
+  -> evidence context + telemetry
 ```
 
-The projection is deliberately derived data. Source turns remain authoritative,
-claims remain the semantic index, and event rows make common reducers executable
-without replacing either one.
+Classification, strategy, analysis, and packaging reasoning are independent.
+Each can be `off`, `fallback`, or `always`. Reasoning is a control-plane input,
+not a new evidence source. Its output is schema-validated, measured, and stored
+in stage telemetry. Invalid or failed outputs fail open by default.
 
-## Design Principles
+Packaging reasoning cannot generate context text. It may only select IDs from
+the existing evidence set. Context rendering remains deterministic.
 
-- Vector search is a candidate generator, not proof.
-- Retrieval is not the final step; it produces evidence to verify.
-- Latest, current, final, negative, aggregate, and multi-hop questions need different plans.
-- Count, sum, and temporal questions should execute over structured rows before answer synthesis.
-- Answers should report coverage and uncertainty rather than sounding definitive by default.
-- Supersession and contradiction are graph states, not hidden resolver side effects.
+## Operator Proofs
 
-## Layers
+Each operator has different correctness requirements.
 
-1. Raw sources stay in Core `source` objects.
-2. Observations stay in Core `observation` objects.
-3. Candidate memories flow through Core and `memory_gateway`.
-4. Semantic claims live in `memory_claim`.
-5. Coherent histories live in `memory_episode`.
-6. Compiled entity/category/event rows support deterministic graph-query reducers.
-7. Retrieval work is made explicit through `memory_query` and `retrieval_plan`.
-8. Evidence and uncertainty are represented by `evidence_bundle`, `coverage_report`, and `memory_answer`.
+| Operator | Required checks |
+| --- | --- |
+| lookup | source provenance, entity compatibility |
+| count/sum/max | bounded candidate set, canonical deduplication, source coverage |
+| current/latest/previous | state history, time cutoff, supersession |
+| order/date delta | all operands, compatible event semantics, resolved event times |
+| ordinal | list identity, preserved position, source role |
+| recommendation | preference scope, target-domain compatibility, constraints |
 
-## First Release Scope
+A vector score cannot satisfy these requirements by itself. Embeddings generate
+and rank candidates; typed execution and graph state determine whether a proof
+is complete.
 
-Version 0.1 is deterministic:
+## Graph Use
 
-- Pydantic schemas
-- ActiveGraph object and relation types
-- deterministic query classification
-- retrieval plan generation
-- source-turn and extracted-claim compiler
-- compiled entity/category/event projection
-- deterministic count, sum, and chronological graph-query reducers
-- evidence-bundle retrieval/assembly runtime
-- coverage and confidence helpers
-- one graph-visible planning behavior
+When materialized, ActiveGraph contains:
 
-It intentionally does not own connector-specific extraction, automatic
-conflict graph mutation, or external connector logic yet. The runtime accepts
-claims produced by upstream extractors and compiles them into a source-grounded
-memory index.
+- `memory_claim` grounded in Core source objects
+- `memory_entity` linked with `memory_about`
+- `memory_event` grounded in claims and sources
+- `memory_state` chains linked by `memory_version_of` and `memory_supersedes`
+- `quantity_claim` and `temporal_ref` linked to claims
+- `memory_query_analysis`, `memory_retrieval_stage`, and `memory_proof`
+- optional `memory_embedding` objects
+
+Stable logical keys make compilation and trace replay idempotent. ActiveGraph's
+event store provides crash durability. The Python `MemoryIndex` is an in-process
+projection and can be rebuilt from the same source log.
+
+## Embeddings
+
+Fielded vectors are generated for claims, turns, entities, events, states, and
+preferences. Entity and event vectors include structured type information, not
+only display text. Entity similarity propagates to graph neighbors before
+operator execution.
+
+Storage is configurable:
+
+- process memory for short-lived tasks
+- `SQLiteEmbeddingStore` for standalone persistence
+- `GraphEmbeddingStore` for graph-visible vectors
+- a caller-supplied provider cache
+
+Embedding keys include model, field, logical subject ID, and text hash. Query
+vectors are not persisted by these stores; compiled corpus vectors are.
+
+## Cost And Telemetry
+
+Every stage records implementation, duration, input/output tokens, cost,
+candidate counts, cache state, and stage-specific metadata. The profile
+benchmark API reports cold and warm latency separately because corpus embedding
+and provider cache behavior can dominate the first query.
+
+Costs are provider-reported for reasoning and caller-estimated for embeddings.
+The runtime does not guess a price when none is supplied.

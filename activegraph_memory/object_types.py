@@ -206,6 +206,159 @@ class MemoryEvaluation(StrictMemoryModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class MemoryEntity(StrictMemoryModel):
+    """Canonical entity resolved from one or more source mentions."""
+
+    entity_key: str
+    canonical_name: str
+    kind: str = "unknown"
+    aliases: list[str] = Field(default_factory=list)
+    source_claim_ids: list[str] = Field(default_factory=list)
+    source_ids: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class MemoryEvent(StrictMemoryModel):
+    """Canonical event with source mentions, modality, and event time."""
+
+    event_key: str
+    predicate: str
+    summary: str
+    entity_refs: list[str] = Field(default_factory=list)
+    categories: list[str] = Field(default_factory=list)
+    modality: str = "actual"
+    polarity: str = "affirmative"
+    event_start: str | None = None
+    event_end: str | None = None
+    source_claim_ids: list[str] = Field(default_factory=list)
+    source_ids: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class MemoryState(StrictMemoryModel):
+    """One version in a subject-property state history."""
+
+    state_key: str
+    value: str
+    subject_ref: str
+    predicate: str
+    status: str = "active"
+    valid_from: str | None = None
+    valid_until: str | None = None
+    observed_at: str | None = None
+    source_claim_id: str | None = None
+    source_ids: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class MemoryPreference(StrictMemoryModel):
+    """Scoped positive or negative preference evidence."""
+
+    preference_key: str
+    subject_ref: str
+    text: str
+    polarity: str
+    scope_terms: list[str] = Field(default_factory=list)
+    explicit: bool = False
+    observed_at: str | None = None
+    source_claim_id: str | None = None
+    source_ids: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class MemoryListItem(StrictMemoryModel):
+    """Position-preserving item extracted from a source list."""
+
+    item_key: str
+    list_key: str
+    position: int = Field(ge=1)
+    text: str
+    role: str
+    source_id: str
+    observed_at: str | None = None
+
+
+class MemoryQueryAnalysis(StrictMemoryModel):
+    """Graph-visible executable query interpretation."""
+
+    query_id: str
+    query: str
+    query_type: str
+    operators: list[str] = Field(default_factory=list)
+    operands: list[str] = Field(default_factory=list)
+    entity_terms: list[str] = Field(default_factory=list)
+    proof_requirements: list[str] = Field(default_factory=list)
+    deterministic_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class MemoryRetrievalStage(StrictMemoryModel):
+    """One measured stage in a memory retrieval run."""
+
+    query_id: str
+    stage: str
+    implementation: str
+    duration_ms: float = Field(default=0.0, ge=0.0)
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    cost_usd: float = Field(default=0.0, ge=0.0)
+    candidates_in: int = Field(default=0, ge=0)
+    candidates_out: int = Field(default=0, ge=0)
+    cached: bool = False
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class MemoryProof(StrictMemoryModel):
+    """Proof obligations and execution result for a memory query."""
+
+    query_id: str
+    operation: str
+    complete: bool = False
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    requirements: list[str] = Field(default_factory=list)
+    satisfied: list[str] = Field(default_factory=list)
+    missing: list[str] = Field(default_factory=list)
+    candidate_answer: str | None = None
+    evidence_ids: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class MemoryBenchmark(StrictMemoryModel):
+    """Aggregated profile latency, usage, cost, and optional quality metrics."""
+
+    name: str
+    profile: str
+    cases: int = Field(default=0, ge=0)
+    repetitions: int = Field(default=1, ge=1)
+    latency_mean_ms: float = Field(default=0.0, ge=0.0)
+    latency_p50_ms: float = Field(default=0.0, ge=0.0)
+    latency_p95_ms: float = Field(default=0.0, ge=0.0)
+    cold_latency_ms: float = Field(default=0.0, ge=0.0)
+    warm_latency_mean_ms: float | None = Field(default=None, ge=0.0)
+    mean_context_tokens: float = Field(default=0.0, ge=0.0)
+    proof_complete_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    cost_usd: float = Field(default=0.0, ge=0.0)
+    quality_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class MemoryEmbedding(StrictMemoryModel):
+    """Optional persistent vector for a compiled-memory field."""
+
+    embedding_key: str
+    subject_kind: str
+    subject_key: str
+    model: str
+    text_sha256: str
+    dimensions: int = Field(ge=1)
+    vector: list[float]
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 OBJECT_TYPES = [
     ObjectType(
         name="memory_claim",
@@ -265,6 +418,16 @@ OBJECT_TYPES = [
         schema=MemoryEvaluation,
         description="A judgment about a memory query, answer, or retrieval process.",
     ),
+    ObjectType(name="memory_entity", schema=MemoryEntity, description="A canonical memory entity."),
+    ObjectType(name="memory_event", schema=MemoryEvent, description="A canonical source-grounded event."),
+    ObjectType(name="memory_state", schema=MemoryState, description="A versioned memory state value."),
+    ObjectType(name="memory_preference", schema=MemoryPreference, description="Scoped preference evidence."),
+    ObjectType(name="memory_list_item", schema=MemoryListItem, description="A position-preserving source list item."),
+    ObjectType(name="memory_query_analysis", schema=MemoryQueryAnalysis, description="An executable memory query analysis."),
+    ObjectType(name="memory_retrieval_stage", schema=MemoryRetrievalStage, description="A measured retrieval stage."),
+    ObjectType(name="memory_proof", schema=MemoryProof, description="Proof obligations and evidence status."),
+    ObjectType(name="memory_benchmark", schema=MemoryBenchmark, description="A memory profile benchmark report."),
+    ObjectType(name="memory_embedding", schema=MemoryEmbedding, description="An optional persistent compiled-memory vector."),
 ]
 
 
@@ -328,6 +491,36 @@ RELATION_TYPES = [
         source_types=("memory_query", "retrieval_plan", "memory_answer", "memory_claim"),
         target_types=("memory_policy",),
         description="A memory object is governed by a policy.",
+    ),
+    RelationType(
+        name="memory_about",
+        source_types=("memory_claim", "memory_event", "memory_state", "memory_preference", "memory_episode"),
+        target_types=("memory_entity",),
+        description="A memory object concerns a canonical entity.",
+    ),
+    RelationType(
+        name="memory_grounded_in",
+        source_types=("memory_claim", "memory_entity", "memory_event", "memory_state", "memory_preference", "memory_list_item", "memory_proof"),
+        target_types=("memory_claim", "source", "observation", "memory_event"),
+        description="A compiled memory object is grounded in an authoritative source object.",
+    ),
+    RelationType(
+        name="memory_version_of",
+        source_types=("memory_state", "memory_event", "memory_episode"),
+        target_types=("memory_state", "memory_event", "memory_episode"),
+        description="A memory object is another version of the same state or event.",
+    ),
+    RelationType(
+        name="memory_stage_for",
+        source_types=("memory_query_analysis", "retrieval_plan", "memory_retrieval_stage", "memory_proof", "memory_benchmark"),
+        target_types=("memory_query", "memory_evaluation"),
+        description="A query artifact or benchmark stage belongs to a memory query or evaluation.",
+    ),
+    RelationType(
+        name="memory_proves",
+        source_types=("memory_proof",),
+        target_types=("memory_answer", "evidence_bundle", "memory_query"),
+        description="A proof supports a memory answer, evidence bundle, or query result.",
     ),
 ]
 

@@ -9,6 +9,8 @@ from activegraph.packs import tool
 from .gateway import build_memory_retrieval_request
 from .object_types import MemoryQuery, RetrievalPlan
 from .planner import plan_query
+from .profiles import runtime_profiles
+from .query_ir import analyze_query
 from .settings import ActiveGraphMemorySettings
 
 
@@ -88,4 +90,23 @@ def build_gateway_request_fn(
     )
 
 
-TOOLS = [plan_memory_query]
+@tool(
+    name="analyze_memory_query",
+    description="Build the deterministic multi-operator query IR and proof obligations.",
+)
+def analyze_memory_query(
+    query: str,
+    question_date: str | None = None,
+) -> dict[str, Any]:
+    return analyze_query(query, question_date=question_date).model_dump()
+
+
+@tool(
+    name="list_memory_profiles",
+    description="List built-in memory quality, latency, context, embedding, and reasoning options.",
+)
+def list_memory_profiles(args, ctx) -> list[dict[str, Any]]:
+    return [profile.model_dump() for profile in runtime_profiles()]
+
+
+TOOLS = [plan_memory_query, analyze_memory_query, list_memory_profiles]

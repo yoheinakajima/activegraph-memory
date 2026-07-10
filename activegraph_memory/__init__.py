@@ -17,9 +17,38 @@ from .compiler import (
     SourceTurn,
     compile_memory_index,
 )
+from .benchmarking import (
+    MemoryBenchmarkCase,
+    MemoryBenchmarkResult,
+    benchmark_profiles,
+    benchmark_runtime,
+    render_benchmark_markdown,
+)
+from .graph_runtime import (
+    GraphMemoryRepository,
+    materialize_memory_index,
+    materialize_retrieval_trace,
+)
+from .embedding_store import EmbeddingVectorStore, GraphEmbeddingStore, SQLiteEmbeddingStore
 from .graph_query import GraphQueryResult, run_graph_query
 from .object_types import OBJECT_TYPES, RELATION_TYPES
+from .profiles import (
+    MemoryRuntimeProfile,
+    StageReasoningPolicy,
+    profile_from_settings,
+    runtime_profile,
+    runtime_profiles,
+)
+from .query_ir import QueryAnalysis, analyze_query
+from .ranking import EmbeddingSignalProvider, RetrievalSignals
+from .reasoning import (
+    ActiveGraphLLMReasoningBackend,
+    ReasoningBackend,
+    ReasoningRequest,
+    ReasoningResponse,
+)
 from .retrieval import MemoryRetrievalResult, retrieve_memory
+from .runtime import MemoryRuntime
 from .settings import ActiveGraphMemorySettings
 from .tools import TOOLS
 
@@ -46,15 +75,40 @@ pack = Pack(
 __all__ = [
     "pack",
     "ActiveGraphMemorySettings",
+    "ActiveGraphLLMReasoningBackend",
     "CategoryRef",
+    "EmbeddingSignalProvider",
+    "EmbeddingVectorStore",
     "EntityRef",
     "ExtractedClaimInput",
     "GraphQueryResult",
+    "GraphMemoryRepository",
+    "GraphEmbeddingStore",
     "MemoryEventRecord",
     "MemoryIndex",
+    "MemoryBenchmarkCase",
+    "MemoryBenchmarkResult",
+    "MemoryRuntime",
+    "MemoryRuntimeProfile",
     "MemoryRetrievalResult",
     "SourceTurn",
+    "SQLiteEmbeddingStore",
+    "QueryAnalysis",
+    "ReasoningBackend",
+    "ReasoningRequest",
+    "ReasoningResponse",
+    "RetrievalSignals",
+    "StageReasoningPolicy",
+    "analyze_query",
+    "benchmark_profiles",
+    "benchmark_runtime",
+    "render_benchmark_markdown",
     "compile_memory_index",
     "retrieve_memory",
+    "profile_from_settings",
+    "runtime_profile",
+    "runtime_profiles",
     "run_graph_query",
+    "materialize_memory_index",
+    "materialize_retrieval_trace",
 ]

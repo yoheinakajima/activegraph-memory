@@ -1,0 +1,156 @@
+{
+  "metadata": {
+    "fixture": "profile-smoke-v1"
+  },
+  "turns": [
+    {
+      "turn_id": "team-1#0",
+      "session_id": "team-1",
+      "session_date": "2023-01-01",
+      "session_idx": 0,
+      "turn_idx": 0,
+      "role": "user",
+      "content": "Rachel's team has five women.",
+      "text": "[Session team-1 (2023-01-01)] user: Rachel's team has five women."
+    },
+    {
+      "turn_id": "team-2#0",
+      "session_id": "team-2",
+      "session_date": "2023-02-01",
+      "session_idx": 1,
+      "turn_idx": 0,
+      "role": "user",
+      "content": "Rachel's team now has six women.",
+      "text": "[Session team-2 (2023-02-01)] user: Rachel's team now has six women."
+    },
+    {
+      "turn_id": "bike#0",
+      "session_id": "bike",
+      "session_date": "2023-04-20",
+      "session_idx": 2,
+      "turn_idx": 0,
+      "role": "user",
+      "content": "I replaced my bike chain for $25 and installed bike lights for $40.",
+      "text": "[Session bike (2023-04-20)] user: I replaced my bike chain for $25 and installed bike lights for $40."
+    },
+    {
+      "turn_id": "plants#0",
+      "session_id": "plants",
+      "session_date": "2023-05-10",
+      "session_idx": 3,
+      "turn_idx": 0,
+      "role": "user",
+      "content": "I acquired a peace lily and a succulent yesterday.",
+      "text": "[Session plants (2023-05-10)] user: I acquired a peace lily and a succulent yesterday."
+    },
+    {
+      "turn_id": "jobs#0",
+      "session_id": "jobs",
+      "session_date": "2023-05-11",
+      "session_idx": 4,
+      "turn_idx": 0,
+      "role": "assistant",
+      "content": "Jobs:\n1. Tutor\n2. Bookkeeper\n3. Transcriptionist",
+      "text": "[Session jobs (2023-05-11)] assistant: Jobs: 1. Tutor 2. Bookkeeper 3. Transcriptionist"
+    },
+    {
+      "turn_id": "travel#0",
+      "session_id": "travel",
+      "session_date": "2023-05-12",
+      "session_idx": 5,
+      "turn_idx": 0,
+      "role": "user",
+      "content": "I prefer hotels with ocean views and rooftop pools.",
+      "text": "[Session travel (2023-05-12)] user: I prefer hotels with ocean views and rooftop pools."
+    }
+  ],
+  "claims": [
+    {
+      "text": "Rachel's team has five women.",
+      "session_id": "team-1",
+      "session_date": "2023-01-01",
+      "session_idx": 0,
+      "role": "user",
+      "mentioned_turn_idxs": [0]
+    },
+    {
+      "text": "Rachel's team now has six women.",
+      "session_id": "team-2",
+      "session_date": "2023-02-01",
+      "session_idx": 1,
+      "role": "user",
+      "mentioned_turn_idxs": [0]
+    },
+    {
+      "text": "The user replaced their bike chain for $25.",
+      "session_id": "bike",
+      "session_date": "2023-04-20",
+      "session_idx": 2,
+      "role": "user",
+      "mentioned_turn_idxs": [0]
+    },
+    {
+      "text": "The user installed bike lights for $40.",
+      "session_id": "bike",
+      "session_date": "2023-04-20",
+      "session_idx": 2,
+      "role": "user",
+      "mentioned_turn_idxs": [0]
+    },
+    {
+      "text": "The user acquired a peace lily and a succulent yesterday.",
+      "session_id": "plants",
+      "session_date": "2023-05-10",
+      "session_idx": 3,
+      "role": "user",
+      "mentioned_turn_idxs": [0]
+    },
+    {
+      "text": "The assistant provided a list of jobs.",
+      "session_id": "jobs",
+      "session_date": "2023-05-11",
+      "session_idx": 4,
+      "role": "assistant",
+      "mentioned_turn_idxs": [0]
+    },
+    {
+      "text": "The user prefers hotels with ocean views and rooftop pools.",
+      "session_id": "travel",
+      "session_date": "2023-05-12",
+      "session_idx": 5,
+      "role": "user",
+      "mentioned_turn_idxs": [0]
+    }
+  ],
+  "cases": [
+    {
+      "case_id": "state-count",
+      "query": "How many women are currently on Rachel's team?",
+      "question_date": "2023-05-13",
+      "expected": "6"
+    },
+    {
+      "case_id": "expense-sum",
+      "query": "How much total money did I spend on bike-related expenses?",
+      "question_date": "2023-05-13",
+      "expected": "$65"
+    },
+    {
+      "case_id": "item-count",
+      "query": "How many plants did I acquire?",
+      "question_date": "2023-05-13",
+      "expected": "2"
+    },
+    {
+      "case_id": "ordinal",
+      "query": "What was the 3rd job in the list you provided?",
+      "question_date": "2023-05-13",
+      "expected": "Transcriptionist"
+    },
+    {
+      "case_id": "preference",
+      "query": "Can you recommend a hotel?",
+      "question_date": "2023-05-13"
+    }
+  ]
+}

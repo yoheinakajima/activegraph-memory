@@ -1,10 +1,10 @@
 # Integration Notes
 
-## With `memory_gateway`
+## memory_gateway
 
-This pack should request retrieval by creating or shaping data for `memory_retrieval_request`. It should not bypass the gateway backend protocol.
-
-Use:
+Use `memory_gateway` for candidate evaluation, durable memory items, and backend
+retrieval. `activegraph-memory` accepts the resulting source-grounded claims and
+adds semantics above that boundary.
 
 ```python
 from activegraph_memory.gateway import build_memory_retrieval_request
@@ -16,36 +16,99 @@ plan = plan_query(query, query_id="q1")
 request_data = build_memory_retrieval_request(query, plan)
 ```
 
-Then write `request_data` as a `memory_retrieval_request` when `memory_gateway` is loaded.
+Write `request_data` as a `memory_retrieval_request` when `memory_gateway` is
+loaded. Do not call a backend invisibly from a behavior.
 
-## With `core`
+## ActiveGraph Runtime
 
-Do not redefine Core objects:
+Bind optional providers through the ActiveGraph runtime:
 
-- `source`
-- `observation`
-- `memory_candidate`
-- `evaluation`
+```python
+from activegraph_memory import MemoryRuntime
 
-Use Core provenance:
-
-```text
-source -> grounds -> observation
-observation -> proposes -> memory_candidate
-memory_candidate -> accepted_as -> memory_item
-memory_claim -> derived_from -> observation/source/memory_item
+memory_runtime = MemoryRuntime.from_activegraph(
+    activegraph_runtime,
+    "quality",
+    reasoning_model="your-reasoning-model",
+    embedding_model="your-embedding-model",
+)
 ```
 
-`derived_from` belongs to Core.
+Provider credentials remain in provider configuration. They are not copied into
+memory objects, prompts, or telemetry.
 
-## With Standalone Agents
+Use `GraphMemoryRepository` when compiled memory and retrieval traces should be
+materialized into the same graph. Pass a mapping from source-turn logical IDs to
+Core source object IDs so claims, entities, events, states, and proofs receive
+`memory_grounded_in` relations.
 
-The pure helper modules can be used without a full ActiveGraph runtime after package dependencies are installed:
+```python
+repository.compile(
+    turns=turns,
+    claims=claims,
+    source_object_ids={"session-1#0": source_object.id},
+)
+```
 
-- `activegraph_memory.planner`
-- `activegraph_memory.coverage`
-- `activegraph_memory.scoring`
-- `activegraph_memory.temporal`
-- `activegraph_memory.gateway`
+For proof and stage relations, `query_id` should be the graph object ID of a
+`memory_query`. External query keys are accepted, but graph relations to a
+missing query object are intentionally skipped.
 
-The package still depends on ActiveGraph because the exported pack and object declarations use ActiveGraph pack APIs.
+## Persistence And Resume
+
+ActiveGraph event-store persistence records every graph mutation. Replaying a
+run rebuilds the materialized projection. `materialize_memory_index` and
+`materialize_retrieval_trace` use stable keys, so replaying completed work does
+not create duplicate objects or relations.
+
+The in-process `MemoryIndex` is not itself a database. After a process crash,
+recompile it from source turns and claims, or reconstruct an application-level
+index from graph objects. Corpus vectors can survive separately through
+`SQLiteEmbeddingStore`, `GraphEmbeddingStore`, or the provider's cache.
+
+## Standalone Agents
+
+Standalone use does not require a running behavior loop:
+
+- `compile_memory_index` builds the projection
+- `MemoryRuntime.retrieve` executes the pipeline
+- `SQLiteEmbeddingStore` persists vectors
+- `benchmark_profiles` measures profile behavior
+
+The package still depends on ActiveGraph because schemas, providers, graph
+materialization, and pack declarations use ActiveGraph APIs.
+
+## Custom Providers
+
+Embedding providers implement ActiveGraph's provider signature:
+
+```python
+provider.embed(texts=["..."], model="model-name")
+```
+
+Reasoning providers implement:
+
+```python
+response = reasoner.reason(request)
+```
+
+`ReasoningResponse` carries structured data, model, token usage, cost, latency,
+cache state, and metadata. Custom outputs are validated against the stage schema
+before they can affect retrieval.
+
+## Custom Profiles
+
+Use a copied built-in profile or construct `MemoryRuntimeProfile` directly.
+Important switches include:
+
+- `use_embeddings`
+- `embed_entities`
+- `embed_events`
+- `use_compiled_projection`
+- `use_rank_fusion`
+- `use_diversity_selection`
+- `include_raw_sources`
+- `compact_context`
+- `reasoning_fail_open`
+
+Every switch is enforced by `MemoryRuntime`; none is documentation-only.

@@ -186,8 +186,9 @@ _PREDICATE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("finish", ("finish", "finished", "complete", "completed")),
     ("move", ("move", "moved", "relocated")),
     ("repair", ("repair", "repaired", "fixed", "serviced", "replaced", "maintenance")),
+    ("install", ("install", "installed", "fitted", "mounted")),
     ("purchase", ("buy", "bought", "purchase", "purchased", "ordered", "paid", "spend", "spent", "cost")),
-    ("acquire", ("acquire", "acquired", "got", "received", "picked up", "adopted")),
+    ("acquire", ("acquire", "acquired", "got", "received", "picked up", "adopted", "arrive", "arrived")),
     ("attend", ("attend", "attended", "went to", "joined", "participated")),
     ("visit", ("visit", "visited", "stopped by", "went to", "toured")),
     ("recommend", ("recommend", "recommended", "suggested", "advised")),
@@ -202,7 +203,7 @@ _PREDICATE_GROUPS: tuple[set[str], ...] = (
     {"start", "acquire"},
     {"finish", "graduate"},
     {"attend", "visit"},
-    {"repair", "purchase"},
+    {"repair", "purchase", "install"},
     {"donate", "expense"},
 )
 
@@ -255,6 +256,22 @@ def category_label(category_id: str) -> str:
     """Human label for a category id."""
 
     return category_id.replace("_", " ")
+
+
+def category_mentions(text: str, category_id: str) -> tuple[str, ...]:
+    """Return distinct taxonomy terms from one category mentioned in text."""
+
+    lower = text.lower()
+    tokens = significant_tokens(text)
+    matches = [
+        keyword
+        for keyword in _CATEGORY_KEYWORDS.get(category_id, ())
+        if _contains_keyword(lower, tokens, keyword)
+    ]
+    label = category_label(category_id)
+    specific = [match for match in matches if normalize_token(match) != normalize_token(label)]
+    values = specific or matches
+    return tuple(dict.fromkeys(values))
 
 
 def infer_predicate(text: str) -> str:

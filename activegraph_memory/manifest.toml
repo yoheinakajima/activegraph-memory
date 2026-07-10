@@ -3,8 +3,8 @@
 
 [pack]
 name = "activegraph_memory"
-version = "0.1.0"
-description = "Semantic and epistemic memory layer for ActiveGraph. Adds claims, episodes, temporal references, retrieval plans, coverage reports, confidence vectors, and evidence-backed answers while composing with core and memory_gateway."
+version = "0.2.0"
+description = "Typed semantic, temporal, and epistemic memory for ActiveGraph with compiled graph queries, proof-oriented retrieval, optional reasoning profiles, persistent embeddings, and measured evidence packaging."
 license = "Apache-2.0"
 
 [pack.provenance]
@@ -15,7 +15,7 @@ source_url = "https://github.com/yoheinakajima/activegraph-memory"
 created_at = "2026-07-08T00:00:00Z"
 
 [pack.integrity]
-content_hash = "sha256:2346d63a9848a2fdea57bd6bfa088033ea6f029ff34415dba02e5b9be5830a1d"
+content_hash = "sha256:bea7131568a79d5ab30a826a3fbe6515cf2f1eb8431851d197cd7682d97af27e"
 
 [dependencies]
 activegraph = ">=1.5,<2.0"
@@ -30,10 +30,10 @@ memory_gateway = ">=0.4"
 entity = ">=0.1"
 
 [surface]
-object_types = ["memory_claim", "memory_episode", "memory_query", "retrieval_plan", "coverage_report", "evidence_bundle", "memory_answer", "temporal_ref", "quantity_claim", "memory_policy", "memory_evaluation"]
-relation_types = ["memory_supports", "memory_contradicts", "memory_supersedes", "memory_has_temporal_ref", "memory_has_quantity", "memory_retrieved_for", "memory_used_as_evidence", "memory_has_coverage", "memory_governed_by_policy"]
-behaviors = ["memory_query_planner"]
-tools = ["plan_memory_query"]
+object_types = ["memory_claim", "memory_episode", "memory_query", "retrieval_plan", "coverage_report", "evidence_bundle", "memory_answer", "temporal_ref", "quantity_claim", "memory_policy", "memory_evaluation", "memory_entity", "memory_event", "memory_state", "memory_preference", "memory_list_item", "memory_query_analysis", "memory_retrieval_stage", "memory_proof", "memory_benchmark", "memory_embedding"]
+relation_types = ["memory_supports", "memory_contradicts", "memory_supersedes", "memory_has_temporal_ref", "memory_has_quantity", "memory_retrieved_for", "memory_used_as_evidence", "memory_has_coverage", "memory_governed_by_policy", "memory_about", "memory_grounded_in", "memory_version_of", "memory_stage_for", "memory_proves"]
+behaviors = ["memory_query_analyzer", "memory_query_planner"]
+tools = ["plan_memory_query", "analyze_memory_query", "list_memory_profiles"]
 settings_schema = "ActiveGraphMemorySettings"
 
 [fixtures]

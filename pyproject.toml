@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "activegraph-memory"
-version = "0.1.0"
+version = "0.2.0"
 description = "Semantic and epistemic memory pack for ActiveGraph"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -56,6 +56,7 @@ include = ["activegraph_memory*"]
 
 [tool.setuptools.package-data]
 "*" = [
+    "manifest.toml",
     "prompts/*.md",
     "fixtures/*.yaml",
     "fixtures/*.json",

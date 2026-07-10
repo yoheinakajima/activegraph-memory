@@ -1,210 +1,279 @@
 # activegraph-memory
 
-`activegraph-memory` is a semantic and epistemic memory pack for [ActiveGraph](https://pypi.org/project/activegraph/).
+`activegraph-memory` is the semantic, temporal, and epistemic memory layer for
+[ActiveGraph](https://pypi.org/project/activegraph/). It compiles source-grounded
+claims into queryable entities, canonical events, state histories, preferences,
+quantities, temporal references, and position-preserving lists.
 
-It sits above `activegraph-packs/packs/memory_gateway`. The gateway owns the low-level lifecycle:
+It does not replace `memory_gateway`. The gateway remains the low-level lifecycle
+and backend seam:
 
 ```text
-memory_candidate -> evaluation -> memory_item -> retrieval/backend
+memory_candidate -> evaluation -> memory_item -> backend retrieval
 ```
 
-This package owns the higher-level memory layer:
+This package adds the higher-level path:
 
-- claim and episode objects
-- temporal validity and quantity claims
-- supersession and contradiction relations
-- deterministic query planning
-- coverage reports
-- confidence vectors
-- evidence-backed memory answers
-
-The first release is intentionally deterministic. It defines the object model, relation model, planner utilities, compiler/retriever runtime, coverage/confidence helpers, and a graph-visible query-planning behavior. It does not own connector-specific extraction and does not replace mem0, Zep, pgvector, SQLite, or the existing memory backend seam.
+```text
+source log + accepted claims
+  -> typed compiled projection
+  -> multi-operator query IR
+  -> hybrid candidate generation
+  -> graph signal propagation
+  -> deterministic operator execution
+  -> proof and coverage checks
+  -> provenance-preserving context
+```
 
 ## Install
 
 ```bash
-pip install -e ".[dev]"
+pip install activegraph-memory
 ```
 
-## Pack Entry Point
+For development:
 
-After installation, ActiveGraph can load the pack by entry point:
-
-```python
-from activegraph_memory import ActiveGraphMemorySettings, pack
-
-settings = ActiveGraphMemorySettings()
+```bash
+python3 -m pip install -e ".[dev]"
+pytest -q
 ```
 
-The package registers:
+The pack entry point is:
 
 ```toml
 [project.entry-points."activegraph.packs"]
 activegraph_memory = "activegraph_memory:pack"
 ```
 
-## What This Pack Adds
+## Runtime
 
-Objects:
-
-- `memory_claim`
-- `memory_episode`
-- `memory_query`
-- `retrieval_plan`
-- `coverage_report`
-- `evidence_bundle`
-- `memory_answer`
-- `temporal_ref`
-- `quantity_claim`
-- `memory_policy`
-- `memory_evaluation`
-
-Relations:
-
-- `memory_supports`
-- `memory_contradicts`
-- `memory_supersedes`
-- `memory_has_temporal_ref`
-- `memory_has_quantity`
-- `memory_retrieved_for`
-- `memory_used_as_evidence`
-- `memory_has_coverage`
-- `memory_governed_by_policy`
-
-Core provenance relations such as `derived_from` stay in Core and are not redefined here.
-
-## Deterministic Planning
-
-The planner turns `memory_query` data into a `retrieval_plan`:
+Callers provide authoritative source turns and claims from an extractor,
+connector, or accepted `memory_gateway` item. Compilation is deterministic and
+does not require an API key.
 
 ```python
-from activegraph_memory.object_types import MemoryQuery
-from activegraph_memory.planner import plan_query
-
-query = MemoryQuery(query="What is the latest launch plan?")
-plan = plan_query(query)
-
-assert plan.requires_freshness is True
-assert "supersession_scan" in plan.strategies
-```
-
-The pack also registers a `memory_query_planner` behavior. When loaded in an ActiveGraph runtime, creating a `memory_query` can create a graph-visible `retrieval_plan`.
-
-## Compile From The Log
-
-The standalone compiler/retriever path accepts source turns plus extracted
-claim inputs from any upstream extractor or connector:
-
-```python
-from activegraph_memory import ExtractedClaimInput, SourceTurn
-from activegraph_memory import compile_memory_index, retrieve_memory
+from activegraph_memory import (
+    ExtractedClaimInput,
+    MemoryRuntime,
+    SourceTurn,
+    compile_memory_index,
+)
 
 turn = SourceTurn(
     turn_id="session-1#0",
     session_id="session-1",
-    session_date="2023-05-27",
+    session_date="2026-07-09",
     session_idx=0,
     turn_idx=0,
     role="user",
-    content="I have been taking Spanish classes for the past three months.",
-    text="[Session session-1 (2023-05-27)] user: I have been taking Spanish classes for the past three months.",
+    content="I bought bike lights for $40 yesterday.",
+    text="[Session session-1 (2026-07-09)] user: I bought bike lights for $40 yesterday.",
 )
 claim = ExtractedClaimInput(
-    text="The user has been taking Spanish classes for the past three months.",
+    text="The user bought bike lights for $40 yesterday.",
     session_id="session-1",
-    session_date="2023-05-27",
+    session_date="2026-07-09",
     session_idx=0,
     role="user",
     mentioned_turn_idxs=(0,),
 )
+
 index = compile_memory_index(turns=[turn], claims=[claim])
-result = retrieve_memory(
+result = MemoryRuntime("balanced").retrieve(
     index,
-    "Which happened first, Spanish classes or the festival?",
-    question_date="2023/05/27 (Sat)",
+    "How much did I spend on bike accessories?",
+    question_date="2026-07-10",
+)
+
+print(result.context_text)
+print(result.metadata["compiled_evidence"])
+print(result.metadata["pipeline_telemetry"])
+```
+
+The compiled evidence packet is placed before raw provenance. A computed answer
+is labeled verified only when its operator-specific proof obligations are met.
+Otherwise the packet is tentative and lists missing requirements.
+
+## Compiled Memory
+
+`compile_memory_index` produces:
+
+- canonical entities and aliases
+- event mentions with modality, polarity, event time, and observation time
+- canonical events with repeated-mention deduplication
+- versioned state histories with supersession
+- scoped preference and professional-profile evidence
+- structured quantities with measure names and units
+- normalized temporal references
+- position-preserving list items
+
+The compiler distinguishes actual, planned, hypothetical, and recommended
+events. It also distinguishes event time from observation time. Source turns
+remain authoritative; every compiled row retains claim and source IDs.
+
+The query IR supports multiple operators and explicit proof requirements for
+lookup; current, latest, and previous state; count, sum, and maximum; temporal
+order and date delta; ordinal list lookup; negative existence; and personalized
+recommendation.
+
+Counts use item cardinality, not just row count. Aggregates scan typed categories
+and compatible actions, deduplicate canonical events, and verify source coverage.
+Temporal comparisons require one compatible dated event per operand. State
+queries inspect the version history and supersession state.
+
+## Retrieval Signals
+
+Retrieval combines deterministic lexical scores with caller-supplied or
+provider-backed embeddings across claims, source turns, entities, events,
+states, and preferences.
+
+Reciprocal-rank fusion prevents one score scale from dominating. Entity scores
+are propagated through compiled entity-to-claim, entity-to-turn,
+entity-to-event, and entity-to-state edges. Embeddings therefore affect graph
+neighbors instead of remaining an isolated similarity list.
+
+## Profiles
+
+All optional reasoning stages use `off`, `fallback`, or `always`. `fallback`
+uses the deterministic result first and calls the reasoner only when confidence
+or proof completeness requires it.
+
+| Profile | Context budget | Rounds | Entity/event embeddings | Classification | Strategy | Retrieval analysis | Packaging |
+| --- | ---: | ---: | --- | --- | --- | --- | --- |
+| `fast` | 2,500 | 1 | off | off | off | off | off |
+| `balanced` | 4,000 | 2 | on | fallback | off | fallback | off |
+| `quality` | 6,000 | 2 | on | fallback | fallback | always | fallback |
+| `max_quality` | 10,000 | 3 | on | always | always | always | always |
+
+Reasoning is optional even in a reasoning-enabled profile. Without a reasoner,
+the runtime remains deterministic. Reasoner failures fail open by default and
+are recorded in stage telemetry. Set `reasoning_fail_open=False` in a custom
+`MemoryRuntimeProfile` when a failed control-plane call should fail the query.
+
+Packaging reasoning may only prioritize or exclude IDs from the already selected
+evidence set. It cannot write or rewrite memory text. The final context is always
+rendered deterministically from known claims and sources.
+
+Profiles are Pydantic models and can be copied safely:
+
+```python
+from activegraph_memory import MemoryRuntime, runtime_profile
+
+profile = runtime_profile("balanced").model_copy(
+    update={"token_budget": 10_000, "include_raw_sources": True}
+)
+runtime = MemoryRuntime(profile)
+```
+
+Pack settings can override individual reasoning stages through
+`profile_from_settings(settings)`.
+
+## ActiveGraph Persistence
+
+`GraphMemoryRepository` materializes claims, entities, events, states,
+preferences, list items, quantities, temporal references, proofs, and measured
+retrieval stages as graph objects. Materialization uses stable keys, so replaying
+the same compile or retrieval trace is idempotent.
+
+```python
+from activegraph import Graph, Runtime
+from activegraph_memory import GraphMemoryRepository, MemoryRuntime
+
+graph = Graph(run_id="memory")
+activegraph_runtime = Runtime(graph, persist_to="sqlite:///memory-events.db")
+repository = GraphMemoryRepository(graph, runtime=MemoryRuntime("balanced"))
+repository.compile(turns=turns, claims=claims)
+result = repository.retrieve("What changed?", query_id="memory-query-object-id")
+```
+
+Durability is provided by the configured ActiveGraph store. The source log can
+be replayed after a crash to rebuild the same compiled objects. Retrieval proof
+and telemetry objects make completed stages auditable.
+
+Corpus embeddings can be process-local, SQLite-backed, or graph-backed:
+
+```python
+from activegraph_memory import GraphEmbeddingStore, MemoryRuntime
+
+runtime = MemoryRuntime(
+    "balanced",
+    embedding_provider=provider,
+    embedding_model="your-model",
+    embedding_store=GraphEmbeddingStore(graph),
 )
 ```
 
-`compile_memory_index` now also builds a compact graph-query projection:
+Use `SQLiteEmbeddingStore(".cache/memory-vectors.sqlite3")` when vectors should
+remain outside graph state. Cache keys include model, field, subject ID, and a
+hash of the embedded text, so changed text cannot silently reuse a stale vector.
 
-- `EntityRef` rows for normalized entity-like references
-- `CategoryRef` rows for deterministic coarse categories
-- `MemoryEventRecord` rows with predicate, category ids, quantities, temporal refs, event dates, claim id, and source-turn ids
+## ActiveGraph Providers
 
-For aggregate and temporal queries, `retrieve_memory` first runs an executable
-graph query over that projection. It can compute counts, sums, temporal order,
-date deltas, and chronological evidence rows before packing normal
-claim/source context. The rendered context starts with a `[graph-query: ...]`
-block when a reducer ran. High-confidence reducers may render a computed answer
-candidate; low-confidence reducers render evidence rows without making the
-candidate authoritative. This keeps arithmetic and timeline work deterministic
-while preserving the raw log evidence below it.
+`MemoryRuntime.from_activegraph(...)` binds to ActiveGraph's configured LLM and
+embedding provider seams. The provider remains responsible for API credentials.
+Secrets are never written into graph objects, telemetry, fixtures, or prompts.
 
-For relative-date lookup questions, retrieval can render a compact
-`[memory-date-packet]` of user source turns near the resolved target date when
-graph context is weak or unavailable. Query token expansion also bridges common
-generic wording gaps, such as `phone accessories` to device/case/charger terms
-or `business milestone` to launch/sign/client/contract terms.
+## Benchmarking
 
-For advice or recommendation queries, retrieval can also render a compact
-`[memory-observation-packet]` made from source-grounded user preference,
-constraint, and experience claims. For exact recall questions about what the
-assistant previously said, listed, recommended, or provided, retrieval favors
-assistant turns and nearby source turns instead of running aggregate graph
-reducers.
+The benchmark API records end-to-end mean, p50, p95, cold, and warm latency;
+context tokens; input and output tokens; estimated provider cost; proof-complete
+rate; optional application quality; and per-stage latency, tokens, cost, cache
+state, and candidate counts.
 
-The retriever returns context text plus structured artifacts:
+Run the committed offline fixture:
 
-- `RetrievalPlan`
-- `EvidenceBundle`
-- `CoverageReport`
-- confidence vector
-- selected claim and source-turn ids
+```bash
+python3.11 -m activegraph_memory.benchmark_cli \
+  --input examples/benchmark_fixture.json \
+  --profiles fast,balanced,quality,max_quality \
+  --repetitions 100 \
+  --hash-embeddings \
+  --score-expected \
+  --format markdown
+```
 
-Claim headers are rendered above source turns, so semantic memory acts as an
-index into the event log rather than a replacement for the log.
+See [docs/benchmark-results.md](docs/benchmark-results.md) for the latest
+reproducible control-plane result and its limitations. For live embeddings or
+reasoning, use `benchmark_profiles(..., runtime_factory=...)` so the report
+includes provider-reported tokens and caller-supplied pricing.
 
-The default standalone retrieval budget is `10000` rough tokens. Benchmarks can
-still pass a smaller `token_budget` explicitly when comparing constrained
-retrieval settings.
+## Pack Surface
 
-## Behavior Map
+The pack registers 21 object types, 14 relation types, two deterministic
+behaviors, and three tools. The main additions are:
 
-| Behavior | Trigger | Output | Notes |
-| --- | --- | --- | --- |
-| `memory_query_planner` | `memory_query.created` | `retrieval_plan` | Deterministic, offline, no API key. |
+- `memory_entity`, `memory_event`, `memory_state`, `memory_preference`
+- `memory_query_analysis`, `memory_proof`, `memory_retrieval_stage`
+- `memory_embedding`, `memory_benchmark`
+- `memory_about`, `memory_grounded_in`, `memory_version_of`
+- `memory_stage_for`, `memory_proves`
 
-Future behavior layers should add connector-specific extraction, full graph-visible evidence retrieval, conflict/supersession writes, and answer synthesis as graph-visible steps.
+The registered tools are `plan_memory_query`, `analyze_memory_query`, and
+`list_memory_profiles`.
 
 ## Gateway Boundary
 
-This pack should compose with `core` and `memory_gateway`:
+`activegraph-memory` composes with Core and `memory_gateway`:
 
 ```text
 source -> observation -> memory_candidate -> evaluation -> memory_item
-                                              |
-memory_query -> retrieval_plan -> memory_retrieval_request -> memory_retrieval
-                         |
-                         -> evidence_bundle -> coverage_report -> memory_answer
+                                                   |
+memory_query -> query_analysis -> retrieval_plan -> memory_retrieval_request
+       |
+       -> retrieval stages -> evidence bundle -> proof -> memory answer
 ```
 
-Retrieval remains auditable because plans and evidence are represented as graph objects instead of hidden function calls.
+Core objects and provenance relations are not redefined. Candidate evaluation
+still precedes durable memory. Backend-specific retrieval stays behind the
+gateway protocol.
 
 ## Validation
 
 ```bash
+python3 -m pip install -e ".[dev]"
 pytest -q
 ```
 
-Tests run offline with no API key and no live network.
-
-## Research Posture
-
-The design follows the idea that vector search is only one access path. Strong memory needs continuity, provenance, belief maintenance, and epistemic reporting:
-
-- semantic recall finds candidate evidence
-- ActiveGraph preserves chronology and relationships
-- structured metadata handles freshness, authority, and coverage
-- answer contracts report uncertainty instead of hiding it
-
-This repo is a foundation for that direction, not a benchmark claim.
+Tests are deterministic and run without API keys or network access. LongMemEval
+integration and large run artifacts live in
+[`yoheinakajima/activegraph-longmemeval`](https://github.com/yoheinakajima/activegraph-longmemeval).

@@ -34,6 +34,12 @@ _MONTH_NAME_DATE_RE = re.compile(
     r"\s+(?P<day>\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(?P<year>20\d{2}))?\b",
     re.IGNORECASE,
 )
+_RELATIVE_DAY_RE = re.compile(r"\b(today|yesterday|day before yesterday|tomorrow)\b", re.IGNORECASE)
+_RELATIVE_WEEKDAY_RE = re.compile(
+    r"\b(?P<direction>last|previous|this|next)\s+"
+    r"(?P<weekday>monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekend)\b",
+    re.IGNORECASE,
+)
 _MONTHS = {
     "jan": 1,
     "january": 1,
@@ -72,6 +78,15 @@ _WORD_NUMBERS = {
     "ten": 10,
     "eleven": 11,
     "twelve": 12,
+}
+_WEEKDAYS = {
+    "monday": 0,
+    "tuesday": 1,
+    "wednesday": 2,
+    "thursday": 3,
+    "friday": 4,
+    "saturday": 5,
+    "sunday": 6,
 }
 
 
@@ -263,4 +278,59 @@ def extract_temporal_refs(text: str, *, anchor_time: str | None = None) -> list[
                 metadata={"year_inferred_from_anchor": not bool(match.group("year"))},
             )
         )
+
+    anchor = _parse_anchor(anchor_time)
+    for match in _RELATIVE_DAY_RE.finditer(text):
+        label = match.group(1).lower()
+        delta = {"day before yesterday": -2, "yesterday": -1, "today": 0, "tomorrow": 1}[label]
+        resolved = anchor + timedelta(days=delta)
+        refs.append(
+            TemporalRef(
+                text=match.group(0),
+                resolved_start=resolved.isoformat(),
+                resolved_end=resolved.isoformat(),
+                anchor_time=anchor.isoformat(),
+                resolution_method="relative_to_source",
+                confidence=0.92,
+                metadata={"relative_day": label},
+            )
+        )
+    for match in _RELATIVE_WEEKDAY_RE.finditer(text):
+        direction = match.group("direction").lower()
+        weekday = match.group("weekday").lower()
+        if weekday == "weekend":
+            start, end = _resolve_weekend(anchor, direction)
+        else:
+            start = _resolve_weekday(anchor, _WEEKDAYS[weekday], direction)
+            end = start
+        refs.append(
+            TemporalRef(
+                text=match.group(0),
+                resolved_start=start.isoformat(),
+                resolved_end=end.isoformat(),
+                anchor_time=anchor.isoformat(),
+                resolution_method="relative_to_source",
+                confidence=0.84 if direction == "this" else 0.9,
+                metadata={"direction": direction, "weekday": weekday},
+            )
+        )
     return refs
+
+
+def _resolve_weekday(anchor: date, weekday: int, direction: str) -> date:
+    if direction in {"last", "previous"}:
+        days = (anchor.weekday() - weekday) % 7 or 7
+        return anchor - timedelta(days=days)
+    if direction == "next":
+        days = (weekday - anchor.weekday()) % 7 or 7
+        return anchor + timedelta(days=days)
+    return anchor + timedelta(days=weekday - anchor.weekday())
+
+
+def _resolve_weekend(anchor: date, direction: str) -> tuple[date, date]:
+    this_saturday = anchor + timedelta(days=5 - anchor.weekday())
+    if direction in {"last", "previous"}:
+        this_saturday -= timedelta(days=7)
+    elif direction == "next":
+        this_saturday += timedelta(days=7)
+    return this_saturday, this_saturday + timedelta(days=1)

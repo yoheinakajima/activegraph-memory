@@ -1,86 +1,155 @@
 # Object Model
 
-## Objects
+## Source And Belief
 
 ### `memory_claim`
 
-A source-grounded belief with scope, status, authority, confidence, and temporal validity.
-
-Use it for facts, preferences, instructions, decisions, procedures, summaries, and uncertain claims.
+A source-grounded fact, preference, instruction, decision, procedure, or
+summary. It carries subject, scope, status, authority, confidence, validity,
+observation time, Core source IDs, and observation IDs.
 
 ### `memory_episode`
 
-A coherent bundle of related sources, claims, entities, and events. Episodes make longer histories easier to retrieve without flattening everything into one memory item.
-
-### `memory_query`
-
-A graph-visible memory question. The `query_type` may be supplied or left as `unknown` for deterministic inference.
-
-### `retrieval_plan`
-
-A strategy object generated from a `memory_query`. It records strategies, target sources, coverage/freshness requirements, risk flags, and steps.
-
-### `coverage_report`
-
-Records searched scopes, unsearched scopes, missing data, boundedness, and what the answer can or cannot safely claim.
-
-### `evidence_bundle`
-
-Groups claims, memory items, sources, and conflicts gathered for a query.
-
-### `memory_answer`
-
-An answer plus epistemic status, confidence vector, evidence bundle reference, caveats, and missing data.
+A coherent grouping of claims, sources, entities, and events.
 
 ### `temporal_ref`
 
-A temporal phrase and its resolved interval when deterministic resolution is possible.
+A temporal phrase with normalized start/end, anchor, resolution method, and
+confidence.
 
 ### `quantity_claim`
 
-A numeric claim with owner, property, value, unit, exactness, and source text.
+A measured property with value, unit, exactness, source text, and confidence.
 
-## Runtime Projection
+## Compiled Projection
 
-The standalone compiler derives additional Python dataclasses from the source
-log and claims:
+### `memory_entity`
 
-- `EntityRef`: normalized entity-like labels and aliases.
-- `CategoryRef`: deterministic coarse categories used for query filtering.
-- `MemoryEventRecord`: predicate, entity refs, category ids, quantities,
-  temporal refs, event dates, claim id, source-turn ids, and sort key.
+A canonical name, kind, aliases, and source provenance. Entities are retrieval
+and graph-traversal nodes, not replacements for source claims.
 
-These rows are derived indexes, not replacement graph objects. They make count,
-sum, and temporal reducers executable while preserving the original source-turn
-and claim provenance.
+### `memory_event`
+
+A canonical event containing action predicate, entities, categories, modality,
+polarity, event time, source claims, source turns, confidence, quantities, and
+deduplication metadata.
+
+### `memory_state`
+
+One version of a subject-property state. State chains use
+`memory_version_of` and `memory_supersedes`.
+
+### `memory_preference`
+
+Positive or negative preference/profile evidence with scope terms, explicitness,
+observation time, confidence, and provenance.
+
+### `memory_list_item`
+
+A list ID, preserved ordinal position, item text, source role, and source ID.
+
+### `memory_embedding`
+
+An optional persistent vector with model, field/subject identity, text hash,
+dimensions, and metadata. It is created only when `GraphEmbeddingStore` is used.
+
+## Query And Proof
+
+### `memory_query`
+
+A graph-visible memory question with subject, time anchor, requested guarantees,
+top-k, and metadata.
+
+### `memory_query_analysis`
+
+The deterministic query IR: operators, operands, entity terms, proof
+requirements, confidence, and resolved query metadata.
+
+### `retrieval_plan`
+
+Strategies, source targets, freshness/coverage requirements, risk flags, and
+steps for a query.
+
+### `memory_retrieval_stage`
+
+One measured pipeline stage with implementation, latency, token usage, cost,
+candidate counts, cache status, and decisions.
+
+### `evidence_bundle`
+
+Claims, memory items, sources, conflicts, and compiled event IDs selected for a
+query.
+
+### `coverage_report`
+
+Searched and unsearched scopes, boundedness, missing data, adequate and
+inadequate answer classes, and coverage confidence.
+
+### `memory_proof`
+
+Operator, candidate answer, required/satisfied/missing checks, selected evidence
+IDs, completion status, and confidence.
+
+### `memory_answer`
+
+Answer text, epistemic status, confidence vector, evidence reference, caveats,
+and missing data.
+
+### `memory_benchmark`
+
+Aggregated profile latency, context, token usage, cost, proof rate, quality, and
+benchmark metadata.
+
+## Governance
 
 ### `memory_policy`
 
-Policy data for governing memory planning, retrieval, and answering.
+Named policy settings for planning, retrieval, or answering.
 
 ### `memory_evaluation`
 
-Human or automated judgment about a memory query, answer, or retrieval process.
+Human or automated judgment of a memory query, answer, or retrieval process.
 
 ## Relations
 
-This pack uses memory-specific relation names:
+| Relation | Meaning |
+| --- | --- |
+| `memory_supports` | Evidence or one claim supports a claim or answer. |
+| `memory_contradicts` | Evidence or one claim conflicts with a claim or answer. |
+| `memory_supersedes` | A newer memory replaces an older version. |
+| `memory_has_temporal_ref` | A claim/query/plan/answer has a temporal reference. |
+| `memory_has_quantity` | A claim or answer has a structured quantity. |
+| `memory_retrieved_for` | A plan or evidence object serves a query. |
+| `memory_used_as_evidence` | A source or memory was used in evidence/answering. |
+| `memory_has_coverage` | A query artifact has a coverage report. |
+| `memory_governed_by_policy` | A memory object is governed by a policy. |
+| `memory_about` | A claim/event/state/preference concerns an entity. |
+| `memory_grounded_in` | A compiled object or proof traces to claims/sources. |
+| `memory_version_of` | A state/event/episode is another version of one identity. |
+| `memory_stage_for` | Analysis, stage, proof, or benchmark belongs to a query. |
+| `memory_proves` | A proof supports a query, evidence bundle, or answer. |
 
-- `memory_supports`
-- `memory_contradicts`
-- `memory_supersedes`
-- `memory_has_temporal_ref`
-- `memory_has_quantity`
-- `memory_retrieved_for`
-- `memory_used_as_evidence`
-- `memory_has_coverage`
-- `memory_governed_by_policy`
+Core provenance relations such as `derived_from`, `grounds`, and `proposes` are
+not redefined.
 
-Core provenance relations such as `derived_from`, `grounds`, and `proposes` are intentionally not redefined here.
+## Runtime Dataclasses
 
-## Confidence Vector
+Before graph materialization, the same semantics are represented by immutable
+compiled records:
 
-Memory answers should prefer a vector over one blended score:
+- `MemoryEntityRecord`
+- `EventMentionRecord`
+- `CanonicalEventRecord`
+- `StateVersionRecord`
+- `PreferenceEvidenceRecord`
+- `ListItemRecord`
+
+`CompiledMemoryProjection` indexes these records by logical entity and event
+IDs. All rows retain source claim and source turn IDs.
+
+## Confidence
+
+Answer confidence is a vector, not one average:
 
 ```json
 {
@@ -95,4 +164,5 @@ Memory answers should prefer a vector over one blended score:
 }
 ```
 
-The helper in `activegraph_memory.scoring` computes an overall value by taking the minimum of required dimensions, not the average.
+Required dimensions are combined conservatively. A high relevance score cannot
+hide missing coverage or unresolved contradiction.

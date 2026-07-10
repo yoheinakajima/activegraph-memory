@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.2.0
+
+- Added profile-driven `MemoryRuntime` orchestration with `fast`, `balanced`,
+  `quality`, and `max_quality` cost/latency profiles.
+- Added optional reasoning seams for query classification, retrieval strategy,
+  retrieval analysis, and context packaging, with per-stage off/fallback/always
+  policies and provider-reported usage telemetry.
+- Added multi-operator query IR with explicit operands, time windows, answer
+  types, and proof obligations.
+- Added a typed compiled projection for canonical entities and events, state
+  histories, scoped preference evidence, and position-preserving list items.
+- Added fielded embedding retrieval through ActiveGraph's embedding-provider
+  seam, reciprocal-rank fusion, targeted retrieval rounds, and session-diverse
+  source packing.
+- Added proof-oriented aggregate, temporal, state, preference, ordinal, and
+  lookup executors plus compact compiled evidence packets.
+- Added graph materialization for compiled memory, proof objects, and measured
+  retrieval stages, along with a `GraphMemoryRepository` facade.
+- Added idempotent graph materialization for quantities and temporal refs plus
+  claim/source and proof/evidence provenance relations.
+- Added persistent `SQLiteEmbeddingStore` and graph-visible
+  `GraphEmbeddingStore` options for compiled corpus vectors.
+- Added entity-embedding propagation through compiled claim, turn, event, and
+  state edges.
+- Added category/action-bounded aggregate scans, source-coverage proofs, item
+  cardinality, multi-quantity measure matching, and repeated-event merging.
+- Constrained optional packaging reasoning to known evidence ids and added
+  schema validation plus fail-open audit telemetry to every reasoning stage.
+- Added reusable cold/warm latency, token, cost, proof-rate, and quality
+  benchmarking helpers plus a JSON-in CLI and reproducible fixture.
+- Hardened quantity extraction against product model numbers, ordinals, dates,
+  and years, and added common relative-day/weekday temporal resolution.
+
 ## 0.1.0
 
 - Initial ActiveGraph semantic memory pack.

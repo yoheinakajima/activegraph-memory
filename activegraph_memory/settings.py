@@ -10,15 +10,15 @@ class ActiveGraphMemorySettings(BaseModel):
 
     enable_claim_extraction: bool = Field(
         default=False,
-        description="Enable LLM-backed claim extraction. Disabled in v0.1.",
+        description="Reserved for a future graph-visible claim extraction behavior.",
     )
     enable_temporal_resolution: bool = Field(
         default=False,
-        description="Enable temporal normalization behavior. Disabled in v0.1.",
+        description="Reserved for a future graph-visible temporal normalization behavior.",
     )
     enable_conflict_detection: bool = Field(
         default=False,
-        description="Enable conflict-detection behavior. Disabled in v0.1.",
+        description="Reserved for a future graph-visible conflict detection behavior.",
     )
     enable_gateway_integration: bool = Field(
         default=True,
@@ -59,4 +59,42 @@ class ActiveGraphMemorySettings(BaseModel):
             "observations",
         ],
         description="Default source families used by deterministic plans.",
+    )
+    runtime_profile: str = Field(
+        default="balanced",
+        pattern=r"^(fast|balanced|quality|max_quality)$",
+        description="Default retrieval quality, latency, and cost profile.",
+    )
+    enable_query_analysis_behavior: bool = Field(
+        default=True,
+        description="Create graph-visible multi-operator query analyses.",
+    )
+    query_classification_reasoning: str | None = Field(
+        default=None,
+        pattern=r"^(off|fallback|always)$",
+        description="Optional override for the profile's classification reasoning policy.",
+    )
+    retrieval_strategy_reasoning: str | None = Field(
+        default=None,
+        pattern=r"^(off|fallback|always)$",
+        description="Optional override for strategy reasoning.",
+    )
+    retrieval_analysis_reasoning: str | None = Field(
+        default=None,
+        pattern=r"^(off|fallback|always)$",
+        description="Optional override for evidence-sufficiency reasoning.",
+    )
+    context_packaging_reasoning: str | None = Field(
+        default=None,
+        pattern=r"^(off|fallback|always)$",
+        description="Optional override for context-packaging reasoning.",
+    )
+    embedding_model: str | None = Field(
+        default=None,
+        description="Embedding model passed to the runtime embedding-provider seam.",
+    )
+    embedding_cost_per_million_tokens: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Optional caller-supplied price used only for telemetry estimates.",
     )

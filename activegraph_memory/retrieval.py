@@ -396,6 +396,12 @@ def retrieve_memory(
     turn_scores: dict[str, float] | None = None,
     token_counter: TokenCounter | None = None,
     retrieval_plan: RetrievalPlan | None = None,
+    enable_graph_query: bool = True,
+    max_claims_per_session: int | None = None,
+    max_direct_turns_per_session: int | None = None,
+    enable_preference_packet: bool = True,
+    exclude_claim_ids: set[str] | None = None,
+    exclude_turn_ids: set[str] | None = None,
 ) -> MemoryRetrievalResult:
     """Retrieve and assemble provenance-backed evidence for a memory query.
 
@@ -404,6 +410,8 @@ def retrieve_memory(
     """
 
     memory_query = query if isinstance(query, MemoryQuery) else MemoryQuery(query=query)
+    exclude_claim_ids = exclude_claim_ids or set()
+    exclude_turn_ids = exclude_turn_ids or set()
     if question_date and memory_query.time_anchor is None:
         memory_query = memory_query.model_copy(update={"time_anchor": question_date})
     plan = retrieval_plan or plan_query(memory_query, query_id=query_id)
@@ -438,7 +446,7 @@ def retrieve_memory(
 
     candidates = _rank_candidates(index, scored_claims, scored_turns, query_type=query_type)
     graph_result = None
-    if not assistant_exact_source:
+    if enable_graph_query and not assistant_exact_source:
         graph_result = run_graph_query(
             index,
             memory_query.query,
@@ -481,6 +489,8 @@ def retrieve_memory(
 
     def add_claim(record: MemoryClaimRecord, *, include_sources: bool = True) -> bool:
         nonlocal truncated
+        if record.claim_id in exclude_claim_ids:
+            return False
         if record.claim_id in selected_claim_set:
             return True
         header = _claim_header(record)
@@ -491,6 +501,7 @@ def retrieve_memory(
                 turn_id
                 for turn_id in record.source_turn_ids
                 if turn_id in index.by_turn_id and turn_id not in selected_turn_ids
+                and turn_id not in exclude_turn_ids
             ]
         for turn_id in new_turn_ids:
             cost += token_counter(index.by_turn_id[turn_id].text) + 1
@@ -505,6 +516,8 @@ def retrieve_memory(
 
     def add_turn(turn: SourceTurn, *, direct: bool = False) -> bool:
         nonlocal truncated
+        if turn.turn_id in exclude_turn_ids:
+            return False
         if turn.turn_id in selected_turn_ids:
             if direct:
                 selected_direct_turn_ids.add(turn.turn_id)
@@ -540,7 +553,7 @@ def retrieve_memory(
             else:
                 truncated = True
 
-    if preference_advice_query:
+    if preference_advice_query and enable_preference_packet:
         observation_context = _render_preference_observation_packet(
             index,
             memory_query.query,
@@ -619,11 +632,19 @@ def retrieve_memory(
                 dynamic_added_turn_ids.append(turn_id)
 
     skip_assistant_fallback = _graph_prefers_user_fallback(graph_result)
+    selected_claims_by_session: dict[str, int] = {}
+    selected_direct_turns_by_session: dict[str, int] = {}
     for candidate in candidates:
         if candidate.score <= 0.0 and selected_claim_ids:
             break
         if candidate.kind == "claim":
             record = index.by_claim_id[candidate.uid]
+            session_id = str(record.claim.metadata.get("session_id") or "")
+            if (
+                max_claims_per_session is not None
+                and selected_claims_by_session.get(session_id, 0) >= max_claims_per_session
+            ):
+                continue
             if skip_assistant_fallback and record.claim.metadata.get("role") == "assistant":
                 continue
             if not _fallback_candidate_matches_query(
@@ -632,10 +653,16 @@ def retrieve_memory(
                 core_terms=candidate_core_terms,
             ):
                 continue
-            add_claim(record)
+            if add_claim(record):
+                selected_claims_by_session[session_id] = selected_claims_by_session.get(session_id, 0) + 1
             continue
 
         turn = index.by_turn_id[candidate.uid]
+        if (
+            max_direct_turns_per_session is not None
+            and selected_direct_turns_by_session.get(turn.session_id, 0) >= max_direct_turns_per_session
+        ):
+            continue
         if skip_assistant_fallback and turn.role == "assistant":
             continue
         if not _fallback_candidate_matches_query(
@@ -644,7 +671,8 @@ def retrieve_memory(
             core_terms=candidate_core_terms,
         ):
             continue
-        add_turn(turn, direct=True)
+        if add_turn(turn, direct=True):
+            selected_direct_turns_by_session[turn.session_id] = selected_direct_turns_by_session.get(turn.session_id, 0) + 1
 
     if assistant_exact_source:
         for turn_id in _neighbor_turn_ids(index, selected_direct_turn_ids, window=2):
@@ -678,6 +706,9 @@ def retrieve_memory(
             "graph_context_skip_reason": graph_context_reason,
             "graph_answer_candidate_rendered": graph_answer_candidate_rendered,
             "observation_context_rendered": observation_context_rendered,
+            "preference_packet_enabled": enable_preference_packet,
+            "excluded_claim_ids": sorted(exclude_claim_ids),
+            "excluded_turn_ids": sorted(exclude_turn_ids),
             "temporal_target_context_rendered": temporal_target_context_rendered,
             "dynamic_expansion": dynamic_expansion,
             "dynamic_added_claim_ids": dynamic_added_claim_ids,
@@ -740,6 +771,12 @@ def retrieve_memory(
             "n_turns_indexed": len(index.turns),
             "n_candidates_considered": len(candidates),
             "n_direct_turns_selected": len(selected_direct_turn_ids),
+            "graph_query_enabled": enable_graph_query,
+            "max_claims_per_session": max_claims_per_session,
+            "max_direct_turns_per_session": max_direct_turns_per_session,
+            "preference_packet_enabled": enable_preference_packet,
+            "excluded_claim_ids": sorted(exclude_claim_ids),
+            "excluded_turn_ids": sorted(exclude_turn_ids),
             "token_budget": effective_token_budget,
             "requested_token_budget": token_budget,
             "adaptive_budget_applied": effective_token_budget != token_budget,
@@ -797,12 +834,13 @@ def _score_claims(
                 score += 0.42
             else:
                 score *= 0.72
+        relevant = external > 0.0 or lexical > 0.0 or phrase > 0.0
         if preference_advice_query:
-            if record.claim.metadata.get("role") == "user":
+            if relevant and record.claim.metadata.get("role") == "user":
                 score += 0.12
             if record.claim.claim_kind in {"preference", "instruction"} or _PREFERENCE_SIGNAL_RE.search(record.text):
-                score += 0.28
-        if query_type in {"aggregate", "multi_hop", "temporal"}:
+                score += 0.28 if relevant else 0.08
+        if relevant and query_type in {"aggregate", "multi_hop", "temporal"}:
             score += 0.04
         out[record.claim_id] = max(0.0, score)
     return out
@@ -827,7 +865,8 @@ def _score_turns(
         score = (0.66 * external) + (0.28 * lexical) + (0.06 * phrase)
         score += _valuation_ratio_boost(memory_query=query, text=turn.text)
         score += _temporal_boost(turn.session_date, temporal_targets)
-        if query_type in {"temporal", "aggregate", "multi_hop"}:
+        relevant = external > 0.0 or lexical > 0.0 or phrase > 0.0
+        if relevant and query_type in {"temporal", "aggregate", "multi_hop"}:
             score += 0.03
         if query_type in {"latest", "current", "final"}:
             score += _recency_boost(turn.session_date) * 0.08
@@ -837,10 +876,10 @@ def _score_turns(
             else:
                 score *= 0.76
         if preference_advice_query:
-            if turn.role == "user":
+            if relevant and turn.role == "user":
                 score += 0.1
             if _PREFERENCE_SIGNAL_RE.search(turn.text):
-                score += 0.22
+                score += 0.22 if relevant else 0.06
         out[turn.turn_id] = max(0.0, score)
     return out
 

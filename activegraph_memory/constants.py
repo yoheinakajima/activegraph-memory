@@ -6,7 +6,7 @@ from typing import Literal
 
 
 PACK_NAME = "activegraph_memory"
-PACK_VERSION = "0.1.0"
+PACK_VERSION = "0.2.0"
 
 ClaimKind = Literal[
     "fact",

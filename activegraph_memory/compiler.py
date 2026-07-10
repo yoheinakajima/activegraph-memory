@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 from .constants import AuthorityLevel, ClaimKind
+from .compiled import CompiledMemoryProjection
 from .object_types import MemoryClaim, QuantityClaim, TemporalRef
 from .taxonomy import category_label, infer_category_ids, infer_polarity, infer_predicate
 from .temporal import extract_temporal_refs
@@ -21,11 +22,12 @@ from .temporal import extract_temporal_refs
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
 _QUANTITY_RE = re.compile(
-    r"(?P<prefix>\$)?(?P<value>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
+    r"(?<![A-Za-z0-9])(?P<prefix>\$)?"
+    r"(?P<value>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
     r"(?P<suffix>[kKmM])?"
     r"\s*(?P<unit>%|percent|dollars?|usd|"
     r"pages?|days?|weeks?|months?|years?|hours?|minutes?|ounces?|oz|cups?|"
-    r"plants?|stories?|babies?|weddings?|museums?|doctors?)?",
+    r"plants?|stories?|babies?|weddings?|museums?|doctors?)?(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
 _WORD_QUANTITY_RE = re.compile(
@@ -74,6 +76,7 @@ _GENERIC_UNIT_STOPWORDS = {
     "of",
     "on",
     "or",
+    "out",
     "over",
     "so",
     "that",
@@ -303,6 +306,7 @@ class MemoryIndex:
     events: list[MemoryEventRecord] = field(default_factory=list)
     by_entity_id: dict[str, EntityRef] = field(default_factory=dict)
     by_event_id: dict[str, MemoryEventRecord] = field(default_factory=dict)
+    compiled: CompiledMemoryProjection = field(default_factory=CompiledMemoryProjection)
 
     @property
     def session_ids(self) -> list[str]:
@@ -409,7 +413,7 @@ def compile_memory_index(
     _mark_supersession(records)
     by_claim_id = {record.claim_id: record for record in records}
     entities, categories, events = _compile_event_projection(records)
-    return MemoryIndex(
+    index = MemoryIndex(
         turns=turn_list,
         claims=records,
         by_turn_id=by_turn_id,
@@ -421,6 +425,10 @@ def compile_memory_index(
         by_entity_id={entity.entity_id: entity for entity in entities},
         by_event_id={event.event_id: event for event in events},
     )
+    from .semantic import compile_typed_projection
+
+    index.compiled = compile_typed_projection(index)
+    return index
 
 
 def _compile_event_projection(
@@ -623,6 +631,8 @@ def extract_quantity_claims(text: str) -> list[QuantityClaim]:
         suffix = (match.group("suffix") or "").lower()
         unit = "usd" if prefix == "$" else (raw_unit.lower() if raw_unit else None)
         value = float(match.group("value").replace(",", ""))
+        if _looks_like_non_quantity_number(text, match, prefix=prefix, raw_unit=raw_unit, suffix=suffix):
+            continue
         if suffix == "k":
             value *= 1000
             if prefix == "$":
@@ -639,7 +649,7 @@ def extract_quantity_claims(text: str) -> list[QuantityClaim]:
         seen.add(key)
         out.append(
             QuantityClaim(
-                property_name="quantity",
+                property_name=_quantity_property(unit),
                 value=value,
                 unit=unit,
                 exactness="exact",
@@ -658,7 +668,7 @@ def extract_quantity_claims(text: str) -> list[QuantityClaim]:
         seen.add(key)
         out.append(
             QuantityClaim(
-                property_name="quantity",
+                property_name=_quantity_property(unit),
                 value=value,
                 unit=unit,
                 exactness="exact",
@@ -678,7 +688,7 @@ def extract_quantity_claims(text: str) -> list[QuantityClaim]:
         seen.add(key)
         out.append(
             QuantityClaim(
-                property_name="quantity",
+                property_name=_quantity_property(unit),
                 value=value,
                 unit=unit,
                 exactness="exact",
@@ -687,6 +697,49 @@ def extract_quantity_claims(text: str) -> list[QuantityClaim]:
             )
         )
     return out
+
+
+def _looks_like_non_quantity_number(
+    text: str,
+    match: re.Match[str],
+    *,
+    prefix: str | None,
+    raw_unit: str | None,
+    suffix: str,
+) -> bool:
+    """Reject dates, years, ordinals, and product-model numbers."""
+
+    if prefix or raw_unit or suffix:
+        return False
+    value = match.group("value").replace(",", "")
+    numeric = float(value)
+    before = text[max(0, match.start() - 40) : match.start()]
+    after = text[match.end() : match.end() + 20]
+    if re.match(r"\s*(?:st|nd|rd|th)\b", after, re.IGNORECASE):
+        return True
+    if 1900 <= numeric <= 2100:
+        return True
+    if re.search(
+        r"\b(?:january|february|march|april|may|june|july|august|september|"
+        r"october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\s*$",
+        before,
+        re.IGNORECASE,
+    ):
+        return True
+    if re.search(r"\b(?:model|version|series|iphone|galaxy|xps|pixel|playstation|ps|xbox)\s*$", before, re.IGNORECASE):
+        return True
+    prior_word = re.search(r"([A-Za-z][A-Za-z0-9-]*)\s*$", before)
+    if prior_word and any(char.isupper() for char in prior_word.group(1)[1:]):
+        return True
+    return False
+
+
+def _quantity_property(unit: str | None) -> str:
+    if unit == "usd":
+        return "money"
+    if unit in {"day", "days", "week", "weeks", "month", "months", "year", "years", "hour", "hours", "minute", "minutes"}:
+        return "duration"
+    return unit or "quantity"
 
 
 def _infer_following_count_unit(text: str, start: int) -> str | None:
