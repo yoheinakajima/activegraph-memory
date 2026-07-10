@@ -222,6 +222,7 @@ class MemoryRuntime:
                 signals,
                 round_index=len(rounds),
                 min_confidence=self.profile.min_sufficiency_confidence,
+                operator_min_confidence=self.profile.operator_min_confidence,
             )
             stage.candidates_in = len(evidence.rows)
             stage.candidates_out = len(assessment.next_queries)
@@ -275,6 +276,7 @@ class MemoryRuntime:
                         signals,
                         round_index=len(rounds),
                         min_confidence=self.profile.min_sufficiency_confidence,
+                        operator_min_confidence=self.profile.operator_min_confidence,
                     )
                     assessments.append(assessment.model_dump())
                 stage.input_tokens = sum(item.input_tokens for item in rounds[1:])
@@ -553,10 +555,15 @@ def _should_render_candidate(
         return False
     if profile.candidate_answer_mode == "proof_complete":
         return evidence.proof_complete
+    effective_threshold = max(
+        profile.min_sufficiency_confidence,
+        profile.operator_min_confidence.get(assessment.metadata.get("operator", ""), 0.0),
+        float(assessment.metadata.get("effective_confidence_threshold") or 0.0),
+    )
     return bool(
         evidence.proof_complete
         and assessment.sufficient
-        and evidence.confidence >= profile.min_sufficiency_confidence
+        and evidence.confidence >= effective_threshold
         and not assessment.conflict_ids
     )
 

@@ -69,6 +69,7 @@ memory_query
   -> entity-to-neighbor graph propagation
   -> typed operator executor
   -> proof requirement evaluation
+  -> query-bounded extraction/compilation/selection coverage audit
   -> deterministic confidence/conflict/sufficiency assessment
   -> targeted retrieval against explicit missing requirements
   -> optional reasoned sufficiency analysis
@@ -90,6 +91,17 @@ assessment and execution continue without a reasoner.
 
 Packaging reasoning cannot generate context text. It may only select IDs from
 the existing evidence set. Context rendering remains deterministic.
+
+Complete-set and preference operators audit four distinct planes:
+
+1. query-relevant immutable source turns;
+2. turns represented by a query-compatible extracted claim;
+3. turns represented by a compatible compiled event or preference;
+4. turns used by the computed result.
+
+Missing raw turns may be recovered into reader context. Recovery is recorded
+separately and never satisfies compiled selection coverage or certifies a
+candidate answer.
 
 ## Operator Proofs
 

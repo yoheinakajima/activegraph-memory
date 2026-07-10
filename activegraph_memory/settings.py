@@ -103,6 +103,10 @@ class ActiveGraphMemorySettings(BaseModel):
         description="Optional override for confidence-driven retrieval expansion.",
     )
     min_sufficiency_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    operator_min_confidence: dict[str, float] | None = Field(
+        default=None,
+        description="Optional per-operator sufficiency thresholds; global threshold remains the floor.",
+    )
     source_budget_ratio: float | None = Field(default=None, ge=0.1, le=1.0)
     max_packet_rows: int | None = Field(default=None, ge=1, le=100)
     candidate_answer_mode: str | None = Field(

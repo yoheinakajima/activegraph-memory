@@ -17,6 +17,12 @@ from .compiler import (
     SourceTurn,
     compile_memory_index,
 )
+from .calibration import (
+    OperatorCalibrationResult,
+    apply_operator_calibration,
+    calibrate_operator_thresholds,
+)
+from .coverage_audit import SourceCoverageAudit, audit_source_coverage
 from .benchmarking import (
     MemoryBenchmarkCase,
     MemoryBenchmarkResult,
@@ -119,6 +125,7 @@ __all__ = [
     "MemoryIngestionBenchmarkResult",
     "MemoryRuntime",
     "MemoryRuntimeProfile",
+    "OperatorCalibrationResult",
     "ReasoningBudget",
     "MemoryRetrievalResult",
     "SourceTurn",
@@ -129,7 +136,10 @@ __all__ = [
     "ReasoningResponse",
     "RetrievalSignals",
     "StageReasoningPolicy",
+    "SourceCoverageAudit",
     "analyze_query",
+    "apply_operator_calibration",
+    "audit_source_coverage",
     "benchmark_profiles",
     "benchmark_ingestion",
     "benchmark_reasoning_ablations",
@@ -139,6 +149,7 @@ __all__ = [
     "reasoning_ablation_profiles",
     "runtime_option_profiles",
     "compile_memory_index",
+    "calibrate_operator_thresholds",
     "extract_claim_inputs",
     "retrieve_memory",
     "profile_from_settings",

@@ -8,6 +8,7 @@ import re
 from typing import Any
 
 from .compiler import MemoryIndex, SourceTurn, claim_tokens, extract_quantity_claims
+from .coverage_audit import SourceCoverageAudit, audit_source_coverage
 from .query_ir import QueryAnalysis
 from .ranking import RetrievalSignals
 from .temporal import extract_temporal_refs
@@ -42,6 +43,25 @@ _INTEREST_PROFILE_RE = re.compile(
     r"\b(?:interested in|curious about|stud(?:y|ies|ying)|learning about|follows?)\b",
     re.IGNORECASE,
 )
+_PREFERENCE_EXPRESSION_RE = re.compile(
+    r"\b(?:prefer|prefers|preference|favorite|like|likes|love|loves|enjoy|enjoys|"
+    r"interested in|want|wants|need|needs|avoid|avoids|without|do not|don't|"
+    r"dislike|dislikes|hate|hates|important to me|works? (?:best|well) for me)\b",
+    re.IGNORECASE,
+)
+_NEGATIVE_PREFERENCE_RE = re.compile(
+    r"\b(?:avoid|avoids|without|do not|don't|dislike|dislikes|hate|hates|never|not want|no [a-z])\b",
+    re.IGNORECASE,
+)
+_NON_ACTUAL_SOURCE_RE = re.compile(
+    r"\b(?:plan|plans|planned|planning|intend|intends|intended|hope|hopes|"
+    r"might|may|could|would|will|hypothetical|if i|if we)\b",
+    re.IGNORECASE,
+)
+_AGGREGATE_GENERIC_TERMS = {
+    "amount", "buy", "bought", "cost", "expense", "money", "paid", "pay",
+    "purchase", "spend", "spent",
+}
 _DOMAIN_TERMS: dict[str, tuple[str, ...]] = {
     "knowledge": ("article", "conference", "course", "journal", "paper", "publication", "research", "resource"),
     "travel": ("airbnb", "flight", "hotel", "resort", "travel", "trip", "vacation"),
@@ -90,6 +110,7 @@ class CompiledEvidence:
     selected_claim_ids: list[str] = field(default_factory=list)
     selected_turn_ids: list[str] = field(default_factory=list)
     selected_event_ids: list[str] = field(default_factory=list)
+    evidence_slots: list[dict[str, Any]] = field(default_factory=list)
     confidence: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -115,6 +136,17 @@ class CompiledEvidence:
         )
         if self.missing_requirements:
             lines.append("Missing: " + ", ".join(self.missing_requirements))
+        if self.evidence_slots:
+            lines.append(
+                "Required evidence slots (preserve names, dates, quantities, and polarity in the final answer):"
+            )
+            for slot in self.evidence_slots[:max_rows]:
+                fields = [
+                    f"{key}={value}"
+                    for key, value in slot.items()
+                    if value not in (None, "", [], ())
+                ]
+                lines.append("- " + " | ".join(fields))
         if self.rows:
             lines.append("Rows:")
             for row in self.rows[:max_rows]:
@@ -371,19 +403,26 @@ def _execute_preferences(index: MemoryIndex, analysis: QueryAnalysis, signals: R
         preference_domains = _profile_domains(preference.text)
         profile_kind = _profile_kind(preference.text)
         domain_match = _profile_domain_match(query_domains, preference_domains, profile_kind)
+        scope_match = _overlap(q_tokens, set(preference.scope_terms))
         score = (
-            (0.52 * dense)
-            + (0.23 * lexical)
+            (0.38 * dense)
+            + (0.2 * lexical)
             + (0.24 * domain_match)
+            + (0.3 * scope_match)
             + (0.44 if profile_kind == "professional_identity" and "knowledge" in query_domains else 0.0)
             + (0.17 if profile_kind == "professional_activity" and "knowledge" in query_domains else 0.0)
             + (0.05 if profile_kind == "interest" and "knowledge" in query_domains else 0.0)
-            + (0.05 if preference.explicit else 0.0)
+            + (0.08 if preference.explicit else 0.0)
         )
         if score > 0.0:
-            scored.append((score, domain_match, profile_kind, preference.observed_at or "", preference))
-    scored.sort(key=lambda item: (-item[0], -item[1], item[3], item[4].preference_id))
-    picked = [item[4] for item in scored[:10]]
+            scored.append(
+                (score, domain_match, scope_match, profile_kind, preference.observed_at or "", preference)
+            )
+    scored.sort(key=lambda item: (-item[0], -item[1], -item[2], item[4], item[5].preference_id))
+    direct = [item[5] for item in scored if item[1] > 0 or item[2] > 0]
+    negative = [item[5] for item in scored if item[5].polarity == "negative"]
+    positive = [item[5] for item in scored if item[5].polarity != "negative"]
+    picked = _dedupe_records([*direct[:8], *negative[:4], *positive[:4], *[item[5] for item in scored[:6]]])[:12]
     rows = [
         {
             "preference": preference.text,
@@ -396,25 +435,121 @@ def _execute_preferences(index: MemoryIndex, analysis: QueryAnalysis, signals: R
         }
         for preference in picked
     ]
+    raw_candidates = _preference_source_candidates(index, analysis, signals, q_tokens, query_domains)
+    selected_ids = {turn_id for preference in picked for turn_id in preference.source_turn_ids}
+    extracted_ids = {
+        turn_id
+        for record in index.claims
+        if _PREFERENCE_EXPRESSION_RE.search(record.text)
+        for turn_id in record.source_turn_ids
+    }
+    compiled_ids = {
+        turn_id
+        for preference in index.compiled.preferences
+        for turn_id in preference.source_turn_ids
+    }
+    recovery = [turn_id for _, turn_id in raw_candidates if turn_id not in selected_ids][:8]
+    coverage = audit_source_coverage(
+        [turn_id for _, turn_id in raw_candidates],
+        extracted_source_ids=extracted_ids,
+        compiled_source_ids=compiled_ids,
+        selected_source_ids=selected_ids,
+        recovery_source_ids=recovery,
+        minimum_ratio=0.85,
+        metadata={"operator": "recommend"},
+    )
     top_domain_match = scored[0][1] if scored else 0.0
+    top_scope_match = scored[0][2] if scored else 0.0
     satisfied = ["source_provenance", "entity_compatibility"] if picked else []
     if picked:
-        if not query_domains or top_domain_match > 0:
+        if top_domain_match > 0 or top_scope_match > 0:
             satisfied.append("preference_scope")
-        if not query_domains or any(item[1] > 0 for item in scored[:5]):
+        negative_candidates = {
+            turn_id
+            for _, turn_id in raw_candidates
+            if _NEGATIVE_PREFERENCE_RE.search(index.by_turn_id[turn_id].content)
+        }
+        if negative_candidates <= (selected_ids | set(recovery)):
             satisfied.append("constraint_coverage")
+        if coverage.complete:
+            satisfied.append("preference_coverage")
+    slots = [
+        {
+            "slot": "negative_constraint" if preference.polarity == "negative" else "positive_preference",
+            "status": "selected",
+            "scope": list(preference.scope_terms),
+            "evidence": preference.text,
+            "source": preference.source_turn_ids[0] if preference.source_turn_ids else None,
+        }
+        for preference in picked
+    ]
+    slots.extend(
+        {
+            "slot": (
+                "negative_constraint_recovery"
+                if _NEGATIVE_PREFERENCE_RE.search(index.by_turn_id[turn_id].content)
+                else "positive_preference_recovery"
+            ),
+            "status": "raw_source_not_in_compiled_result",
+            "evidence": _evidence_excerpt(index.by_turn_id[turn_id].content),
+            "source": turn_id,
+        }
+        for turn_id in recovery
+    )
     return CompiledEvidence(
         operation="preference/profile",
         rows=rows,
         satisfied_requirements=satisfied,
         selected_claim_ids=[preference.source_claim_id for preference in picked if preference.source_claim_id],
-        selected_turn_ids=[turn_id for preference in picked for turn_id in preference.source_turn_ids],
+        selected_turn_ids=[
+            *[turn_id for preference in picked for turn_id in preference.source_turn_ids],
+            *recovery,
+        ],
+        evidence_slots=slots,
         confidence=min(0.9, scored[0][0] + 0.1) if scored else 0.0,
         metadata={
             "query_domains": sorted(query_domains),
-            "top_profile_kinds": [item[2] for item in scored[:10]],
+            "top_profile_kinds": [item[3] for item in scored[:10]],
+            "coverage_audit": coverage.model_dump(),
         },
     )
+
+
+def _preference_source_candidates(
+    index: MemoryIndex,
+    analysis: QueryAnalysis,
+    signals: RetrievalSignals,
+    q_tokens: set[str],
+    query_domains: set[str],
+) -> list[tuple[float, str]]:
+    candidates = []
+    dense_floor = max(signals.turn_scores.values(), default=0.0) * 0.7
+    for turn in index.turns:
+        if turn.role != "user" or not _not_after_anchor(turn.session_date, analysis):
+            continue
+        if not _PREFERENCE_EXPRESSION_RE.search(turn.content):
+            continue
+        domains = _profile_domains(turn.content)
+        domain_match = 1.0 if query_domains & domains else 0.0
+        lexical = _overlap(q_tokens, claim_tokens(turn.content))
+        dense = signals.turn_scores.get(turn.turn_id, 0.0)
+        if query_domains and not domain_match and lexical <= 0.0:
+            continue
+        if not query_domains and lexical <= 0.0 and (dense_floor <= 0.0 or dense < dense_floor):
+            continue
+        candidates.append(((0.45 * dense) + (0.35 * lexical) + (0.3 * domain_match), turn.turn_id))
+    return sorted(candidates, key=lambda item: (-item[0], item[1]))
+
+
+def _dedupe_records(values):
+    seen = set()
+    out = []
+    for value in values:
+        key = getattr(value, "preference_id", id(value))
+        if key not in seen:
+            seen.add(key)
+            out.append(value)
+    return out
 
 
 def _state_transition_score(index: MemoryIndex, state) -> float:
@@ -539,15 +674,51 @@ def _execute_aggregate(index: MemoryIndex, analysis: QueryAnalysis, signals: Ret
         satisfied.append("entity_compatibility")
     if selected and core_covered:
         satisfied.extend(["bounded_candidate_set", "canonical_event_deduplication"])
-    source_coverage, missing_source_ids = _aggregate_source_coverage(
+    coverage = _aggregate_source_coverage(
         index,
         analysis,
         selected,
+        signals,
+        q_tokens=q_tokens,
         category_constraints=category_constraints,
         query_predicate=query_predicate,
     )
-    if source_coverage:
+    if coverage.complete:
         satisfied.append("source_coverage")
+    recovery_rows = [
+        {
+            "slot": "coverage_recovery",
+            "status": "raw_source_not_in_compiled_result",
+            "source": turn_id,
+            "evidence": _evidence_excerpt(index.by_turn_id[turn_id].content),
+        }
+        for turn_id in coverage.recovery_source_ids[:6]
+        if turn_id in index.by_turn_id
+    ]
+    event_slots = [
+        {
+            "slot": f"matched_event_{position}",
+            "status": "selected",
+            "event": event.summary,
+            "date": event.event_start,
+            "quantity": [
+                f"{quantity.get('value')} {quantity.get('unit') or quantity.get('property_name')}"
+                for quantity in event.quantities
+                if quantity.get("value") is not None
+            ],
+            "count_contribution": _event_cardinality(
+                event,
+                category_constraints,
+                q_tokens,
+                query_predicate=query_predicate,
+            ),
+            "sources": list(event.source_turn_ids),
+        }
+        for position, event in enumerate(
+            sorted(selected, key=lambda event: (event.event_start or "", event.event_id)),
+            start=1,
+        )
+    ]
     confidence = min(0.9, candidates[0][0] + 0.12) if selected else 0.0
     if not core_covered:
         candidate_answer = None
@@ -558,15 +729,24 @@ def _execute_aggregate(index: MemoryIndex, analysis: QueryAnalysis, signals: Ret
         candidate_answer=candidate_answer,
         satisfied_requirements=satisfied,
         selected_claim_ids=[claim_id for event in selected for claim_id in event.claim_ids],
-        selected_turn_ids=[turn_id for event in selected for turn_id in event.source_turn_ids],
+        selected_turn_ids=[
+            *[turn_id for event in selected for turn_id in event.source_turn_ids],
+            *coverage.recovery_source_ids,
+        ],
         selected_event_ids=[event.event_id for event in selected],
+        evidence_slots=[*event_slots, *recovery_rows],
         confidence=confidence,
         metadata={
             "bounded_index_scan": True,
             "category_constraints": sorted(category_constraints),
             "query_predicate": query_predicate,
-            "source_coverage": source_coverage,
-            "missing_source_ids": missing_source_ids,
+            "source_coverage": coverage.complete,
+            "coverage_audit": coverage.model_dump(),
+            "missing_source_ids": sorted(
+                set(coverage.missing_extraction_ids)
+                | set(coverage.missing_compilation_ids)
+                | set(coverage.missing_selection_ids)
+            ),
             "matched_events": len(selected),
         },
     )
@@ -726,10 +906,26 @@ def _execute_temporal(index: MemoryIndex, analysis: QueryAnalysis, signals: Retr
         if first and last:
             candidate = f"{abs((last - first).days)} days"
     satisfied = ["source_provenance"]
-    if selected_events:
+    if selected_events or selected_source_turn_ids:
         satisfied.extend(["entity_compatibility", "event_time_resolution"])
     if len(found_operands) == len(operands) and len(operands) >= 2:
         satisfied.extend(["operand_coverage", "all_operands_found"])
+    slots = []
+    for operand in operands:
+        matching = [row for row in rows if row.get("operand") == operand]
+        if matching:
+            row = matching[0]
+            slots.append(
+                {
+                    "slot": f"operand:{operand}",
+                    "status": "found",
+                    "date": row.get("date"),
+                    "event": row.get("event"),
+                    "source": row.get("source"),
+                }
+            )
+        else:
+            slots.append({"slot": f"operand:{operand}", "status": "missing"})
     return CompiledEvidence(
         operation=f"temporal/{analysis.primary_operator}",
         rows=rows,
@@ -738,6 +934,7 @@ def _execute_temporal(index: MemoryIndex, analysis: QueryAnalysis, signals: Retr
         selected_claim_ids=[claim_id for _, event in selected_events for claim_id in event.claim_ids],
         selected_turn_ids=selected_source_turn_ids + [turn_id for _, event in selected_events for turn_id in event.source_turn_ids],
         selected_event_ids=[event.event_id for _, event in selected_events],
+        evidence_slots=slots,
         confidence=0.88 if candidate else (0.58 if rows else 0.0),
         metadata={
             "operands": operands,
@@ -1037,10 +1234,11 @@ def _execute_lookup(index: MemoryIndex, analysis: QueryAnalysis, signals: Retrie
 
 
 def _core_terms_covered(query_tokens: set[str], events) -> bool:
-    if not query_tokens:
+    core_tokens = query_tokens - _AGGREGATE_GENERIC_TERMS
+    if not core_tokens:
         return True
     event_tokens = set().union(*(claim_tokens(event.summary) for event in events)) if events else set()
-    return len(query_tokens & event_tokens) >= min(2, len(query_tokens))
+    return len(core_tokens & event_tokens) >= min(2, len(core_tokens))
 
 
 def _in_window(value: str | None, start: str | None, end: str | None) -> bool:
@@ -1148,16 +1346,21 @@ def _aggregate_source_coverage(
     index: MemoryIndex,
     analysis: QueryAnalysis,
     selected,
+    signals: RetrievalSignals,
     *,
+    q_tokens: set[str],
     category_constraints: set[str],
     query_predicate: str,
-) -> tuple[bool, list[str]]:
-    covered = {turn_id for event in selected for turn_id in event.source_turn_ids}
+) -> SourceCoverageAudit:
+    selected_ids = {turn_id for event in selected for turn_id in event.source_turn_ids}
     candidates: set[str] = set()
+    dense_floor = max(signals.turn_scores.values(), default=0.0) * 0.7
     for turn in index.turns:
         if turn.role not in analysis.source_roles:
             continue
         if not _in_window(turn.session_date, analysis.time_start, analysis.time_end):
+            continue
+        if analysis.completed_only and _NON_ACTUAL_SOURCE_RE.search(turn.content):
             continue
         if category_constraints and not category_constraints & set(infer_category_ids(turn.content)):
             continue
@@ -1169,9 +1372,49 @@ def _aggregate_source_coverage(
             infer_predicate(turn.content),
         ):
             continue
+        lexical = _overlap(q_tokens, claim_tokens(turn.content))
+        dense = signals.turn_scores.get(turn.turn_id, 0.0)
+        if lexical <= 0.0 and (dense_floor <= 0.0 or dense < dense_floor):
+            continue
         candidates.add(turn.turn_id)
-    missing = sorted(candidates - covered)
-    return bool(selected) and not missing, missing
+    if not candidates and selected_ids:
+        candidates.update(selected_ids)
+    extracted_ids = {
+        turn_id
+        for record in index.claims
+        if record.claim.metadata.get("role") in analysis.source_roles
+        and not (analysis.completed_only and _NON_ACTUAL_SOURCE_RE.search(record.text))
+        and (query_predicate == "state" or predicates_compatible(query_predicate, infer_predicate(record.text)))
+        and (
+            not category_constraints
+            or category_constraints & set(infer_category_ids(record.text))
+        )
+        for turn_id in record.source_turn_ids
+    }
+    compiled_ids = {
+        turn_id
+        for event in index.compiled.canonical_events
+        if event.modality == "actual"
+        and (query_predicate == "state" or predicates_compatible(query_predicate, event.predicate))
+        for turn_id in event.source_turn_ids
+    }
+    recovery = sorted(
+        candidates - selected_ids,
+        key=lambda turn_id: (
+            -signals.turn_scores.get(turn_id, 0.0),
+            -_overlap(q_tokens, claim_tokens(index.by_turn_id[turn_id].content)),
+            turn_id,
+        ),
+    )[:12]
+    return audit_source_coverage(
+        candidates,
+        extracted_source_ids=extracted_ids,
+        compiled_source_ids=compiled_ids,
+        selected_source_ids=selected_ids,
+        recovery_source_ids=recovery,
+        minimum_ratio=0.9,
+        metadata={"operator": analysis.primary_operator},
+    )
 
 
 def _profile_domains(text: str) -> set[str]:
@@ -1258,3 +1501,8 @@ def _overlap(query_tokens: set[str], document_tokens: set[str]) -> float:
     if not query_tokens or not document_tokens:
         return 0.0
     return len(query_tokens & document_tokens) / len(query_tokens)
+
+
+def _evidence_excerpt(text: str, limit: int = 600) -> str:
+    normalized = " ".join(text.split())
+    return normalized if len(normalized) <= limit else normalized[: limit - 3].rstrip() + "..."

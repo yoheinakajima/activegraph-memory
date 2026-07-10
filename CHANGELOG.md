@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.0
+
+- Added query-bounded source coverage audits that separately measure relevant
+  source extraction, typed compilation, compiled selection, and reader-visible
+  recovery. Raw recovery evidence never certifies a computed candidate.
+- Added raw-source recovery for incomplete aggregate and preference projections,
+  with bounded excerpts and direct provenance in the final evidence set.
+- Added explicit evidence slots for aggregate events, temporal operands,
+  positive preferences, negative constraints, and recovered sources.
+- Added polarity- and scope-aware preference selection plus preference-specific
+  extraction, compilation, and selection coverage.
+- Added configurable per-operator confidence thresholds and held-out calibration
+  helpers that fit the broadest candidate gate meeting a target precision.
+- Added benchmark fields for mean coverage confidence, recovery-source rate,
+  and evidence-slot count.
+- Added a non-benchmark application fixture covering finance, project state,
+  scheduling, travel constraints, and completed-versus-planned agent work.
+- Hardened plan exclusion in complete-set coverage, inflected preference
+  detection, source-grounded temporal proof fields, and aggregate core terms.
+
 ## 0.3.0
 
 - Renamed compiled answer labels from `Verified candidate` / `Tentative

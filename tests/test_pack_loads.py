@@ -7,7 +7,7 @@ from activegraph.packs.manifest import load_manifest, verify_content_hash, verif
 
 def test_pack_loads_with_expected_metadata():
     assert pack.name == "activegraph_memory"
-    assert pack.version == "0.3.0"
+    assert pack.version == "0.4.0"
     assert pack.settings_schema is ActiveGraphMemorySettings
 
 

@@ -36,6 +36,7 @@ def assess_retrieval(
     *,
     round_index: int,
     min_confidence: float,
+    operator_min_confidence: dict[str, float] | None = None,
 ) -> RetrievalAssessment:
     """Conservatively assess evidence without treating vector score as proof."""
 
@@ -50,13 +51,15 @@ def assess_retrieval(
     exhaustive = analysis.requires_exhaustive_coverage
     temporal = any(operator in {"order", "date_delta", "latest", "current", "previous"} for operator in analysis.operators)
 
+    coverage_audit = evidence.metadata.get("coverage_audit") or {}
+    measured_coverage = float(coverage_audit.get("confidence") or 0.0)
     dimensions = {
         "candidate_recall": 1.0 if evidence.rows else 0.0,
         "entity_resolution": 1.0 if "entity_compatibility" in satisfied else (0.45 if evidence.rows else 0.0),
         "source_coverage": (
             1.0
             if "source_coverage" in satisfied or not exhaustive
-            else 0.35 if evidence.rows else 0.0
+            else measured_coverage if coverage_audit else 0.35 if evidence.rows else 0.0
         ),
         "temporal_resolution": (
             1.0
@@ -81,14 +84,17 @@ def assess_retrieval(
         reasons.append("missing_operator_requirements")
     if conflicts:
         reasons.append("selected_evidence_has_unresolved_conflicts")
-    if evidence.confidence < min_confidence:
-        reasons.append("execution_confidence_below_profile_threshold")
-
+    effective_threshold = max(
+        min_confidence,
+        float((operator_min_confidence or {}).get(analysis.primary_operator, min_confidence)),
+    )
+    if evidence.confidence < effective_threshold:
+        reasons.append("execution_confidence_below_operator_threshold")
     sufficient = bool(
         evidence.rows
         and evidence.proof_complete
         and not conflicts
-        and overall >= min_confidence
+        and overall >= effective_threshold
     )
     if sufficient:
         reasons.append("operator_proof_and_confidence_sufficient")
@@ -104,10 +110,13 @@ def assess_retrieval(
         reasons=reasons,
         next_queries=next_queries,
         metadata={
+            "operator": analysis.primary_operator,
             "proof_complete": evidence.proof_complete,
             "proof_requirements": sorted(required),
             "satisfied_requirements": sorted(satisfied),
             "signal_candidates": len(signals.claim_scores) + len(signals.turn_scores),
+            "effective_confidence_threshold": effective_threshold,
+            "coverage_audit": coverage_audit,
         },
     )
 
@@ -122,7 +131,7 @@ def _targeted_queries(
     if missing_set & {"all_operands_found", "operand_coverage", "event_time_resolution"}:
         for operand in analysis.operands:
             out.append(f"{operand} date time occurrence")
-    if missing_set & {"preference_scope", "constraint_coverage"}:
+    if missing_set & {"preference_scope", "constraint_coverage", "preference_coverage"}:
         out.append(f"user preferences dislikes constraints {' '.join(analysis.entity_terms)}")
     if missing_set & {"source_coverage", "bounded_candidate_set"} or dimensions["source_coverage"] < 0.8:
         scope = " ".join([*analysis.category_terms, *analysis.entity_terms])

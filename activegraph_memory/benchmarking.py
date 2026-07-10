@@ -41,6 +41,9 @@ class MemoryBenchmarkResult:
     candidate_answer_render_rate: float
     reasoning_calls: int
     reasoning_cost_usd: float
+    mean_coverage_confidence: float
+    recovery_source_rate: float
+    mean_evidence_slots: float
     input_tokens: int
     output_tokens: int
     cost_usd: float
@@ -178,6 +181,8 @@ def benchmark_runtime(
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             telemetry = result.metadata["pipeline_telemetry"]
             assessment = result.metadata.get("retrieval_assessment") or {}
+            compiled = result.metadata.get("compiled_evidence") or {}
+            coverage_audit = (compiled.get("metadata") or {}).get("coverage_audit") or {}
             reasoning_stages = [
                 stage
                 for stage in telemetry["stages"]
@@ -198,6 +203,11 @@ def benchmark_runtime(
                 "candidate_answer_rendered": bool(result.metadata.get("candidate_answer_rendered")),
                 "reasoning_calls": len(reasoning_stages),
                 "reasoning_cost_usd": sum(float(stage.get("cost_usd") or 0.0) for stage in reasoning_stages),
+                "coverage_confidence": (
+                    float(coverage_audit.get("confidence")) if coverage_audit else None
+                ),
+                "recovery_sources": len(coverage_audit.get("recovery_source_ids") or []),
+                "evidence_slots": len(compiled.get("evidence_slots") or []),
             }
             if evaluator is not None:
                 evaluated = evaluator(case, result)
@@ -252,6 +262,28 @@ def benchmark_runtime(
         ),
         reasoning_calls=sum(record["reasoning_calls"] for record in records),
         reasoning_cost_usd=round(sum(record["reasoning_cost_usd"] for record in records), 8),
+        mean_coverage_confidence=(
+            round(
+                statistics.fmean(
+                    record["coverage_confidence"]
+                    for record in records
+                    if record["coverage_confidence"] is not None
+                ),
+                4,
+            )
+            if any(record["coverage_confidence"] is not None for record in records)
+            else 0.0
+        ),
+        recovery_source_rate=(
+            round(sum(record["recovery_sources"] > 0 for record in records) / len(records), 4)
+            if records
+            else 0.0
+        ),
+        mean_evidence_slots=(
+            round(statistics.fmean(record["evidence_slots"] for record in records), 3)
+            if records
+            else 0.0
+        ),
         input_tokens=sum(record["input_tokens"] for record in records),
         output_tokens=sum(record["output_tokens"] for record in records),
         cost_usd=round(sum(record["cost_usd"] for record in records), 8),

@@ -1,6 +1,6 @@
 # Roadmap
 
-## Implemented Through 0.3
+## Implemented Through 0.4
 
 - deterministic source-turn and claim compilation
 - typed entities, event mentions, canonical events, state histories,
@@ -30,12 +30,15 @@
 - cumulative reasoning call/token/cost/latency budgets
 - bounded negative-existence certificates
 - deterministic option matrices, reasoning ablations, and ingestion benchmarks
+- source extraction/compilation/selection coverage audits with raw recovery
+- aggregate, temporal-operand, and scoped preference/constraint evidence slots
+- per-operator confidence floors and held-out calibration helpers
+- benchmark-independent finance, project, schedule, preference, and agent traces
 
 ## Near-Term Work
 
 ### Extraction Quality
 
-- calibrate extraction coverage against raw-source scans
 - connect accepted `memory_gateway` items without adapter-specific conversion
 
 ### Belief Maintenance

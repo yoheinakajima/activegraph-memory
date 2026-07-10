@@ -170,6 +170,13 @@ compiled records:
 `CompiledMemoryProjection` indexes these records by logical entity, event, and
 conflict IDs. All rows retain source claim and source turn IDs.
 
+`CompiledEvidence.evidence_slots` gives aggregate events, temporal operands,
+positive preferences, negative constraints, and raw recovery sources stable
+roles in the reader packet. `SourceCoverageAudit` separately measures relevant
+source extraction, compilation, computed selection, and reader-visible
+recovery. These are runtime contracts rather than new authoritative graph
+objects; retrieval assessments and proofs persist their serialized values.
+
 ## Confidence
 
 Answer confidence is a vector, not one average:

@@ -70,12 +70,15 @@ _EVENT_RE = re.compile(
     re.IGNORECASE,
 )
 _PREFERENCE_RE = re.compile(
-    r"\b(prefer|favorite|like|likes|liked|love|enjoy|want|interested in|avoid|"
-    r"dislike|doesn't like|don't like|works? well|struggling with|works? in|"
+    r"\b(prefer|prefers|favorite|like|likes|liked|love|loves|enjoy|enjoys|want|wants|"
+    r"interested in|avoid|avoids|dislike|dislikes|doesn't like|don't like|works? well|struggling with|works? in|"
     r"research(?:es|ing)?|focus(?:es|ed)? on|specializ(?:es|ed|ing)|field of)\b",
     re.IGNORECASE,
 )
-_NEGATIVE_PREFERENCE_RE = re.compile(r"\b(avoid|dislike|doesn't like|don't like|not prefer|without)\b", re.IGNORECASE)
+_NEGATIVE_PREFERENCE_RE = re.compile(
+    r"\b(avoid|avoids|dislike|dislikes|doesn't like|don't like|not prefer|without)\b",
+    re.IGNORECASE,
+)
 _STATE_STOPWORDS = {
     "active",
     "already",

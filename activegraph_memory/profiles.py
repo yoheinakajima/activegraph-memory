@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 ReasoningMode = Literal["off", "fallback", "always"]
@@ -56,12 +56,21 @@ class MemoryRuntimeProfile(BaseModel):
     compact_context: bool = True
     adaptive_retrieval: bool = True
     min_sufficiency_confidence: float = Field(default=0.65, ge=0.0, le=1.0)
+    operator_min_confidence: dict[str, float] = Field(default_factory=dict)
     source_budget_ratio: float = Field(default=0.85, ge=0.1, le=1.0)
     max_packet_rows: int = Field(default=16, ge=1, le=100)
     candidate_answer_mode: CandidateAnswerMode = "calibrated"
     reasoning_fail_open: bool = True
     reasoning: StageReasoningPolicy = Field(default_factory=StageReasoningPolicy)
     reasoning_budget: ReasoningBudget = Field(default_factory=ReasoningBudget)
+
+    @field_validator("operator_min_confidence")
+    @classmethod
+    def validate_operator_thresholds(cls, value: dict[str, float]) -> dict[str, float]:
+        invalid = {key: threshold for key, threshold in value.items() if not 0.0 <= threshold <= 1.0}
+        if invalid:
+            raise ValueError(f"operator confidence thresholds must be between 0 and 1: {invalid}")
+        return value
 
 
 _PROFILES: dict[RuntimeProfileName, MemoryRuntimeProfile] = {
@@ -94,6 +103,16 @@ _PROFILES: dict[RuntimeProfileName, MemoryRuntimeProfile] = {
         min_sufficiency_confidence=0.65,
         source_budget_ratio=0.85,
         max_packet_rows=12,
+        operator_min_confidence={
+            "count": 0.72,
+            "sum": 0.72,
+            "max": 0.75,
+            "order": 0.75,
+            "date_delta": 0.78,
+            "recommend": 0.75,
+            "negative_existence": 0.85,
+            "ordinal": 0.78,
+        },
         reasoning=StageReasoningPolicy(
             query_classification="fallback",
             retrieval_analysis="fallback",
@@ -118,6 +137,16 @@ _PROFILES: dict[RuntimeProfileName, MemoryRuntimeProfile] = {
         min_sufficiency_confidence=0.72,
         source_budget_ratio=0.82,
         max_packet_rows=16,
+        operator_min_confidence={
+            "count": 0.78,
+            "sum": 0.78,
+            "max": 0.8,
+            "order": 0.82,
+            "date_delta": 0.84,
+            "recommend": 0.8,
+            "negative_existence": 0.9,
+            "ordinal": 0.82,
+        },
         reasoning=StageReasoningPolicy(
             query_classification="fallback",
             retrieval_strategy="fallback",
@@ -144,6 +173,20 @@ _PROFILES: dict[RuntimeProfileName, MemoryRuntimeProfile] = {
         min_sufficiency_confidence=0.78,
         source_budget_ratio=0.82,
         max_packet_rows=16,
+        operator_min_confidence={
+            "lookup": 0.78,
+            "current": 0.8,
+            "latest": 0.8,
+            "previous": 0.8,
+            "count": 0.82,
+            "sum": 0.82,
+            "max": 0.84,
+            "order": 0.85,
+            "date_delta": 0.87,
+            "recommend": 0.84,
+            "negative_existence": 0.92,
+            "ordinal": 0.85,
+        },
         reasoning=StageReasoningPolicy(
             query_classification="always",
             retrieval_strategy="always",
@@ -196,6 +239,7 @@ def profile_from_settings(settings) -> MemoryRuntimeProfile:
     for field in (
         "adaptive_retrieval",
         "min_sufficiency_confidence",
+        "operator_min_confidence",
         "source_budget_ratio",
         "max_packet_rows",
         "candidate_answer_mode",

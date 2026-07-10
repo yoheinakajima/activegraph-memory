@@ -87,3 +87,24 @@ The profiles are close here because the fixture is small and no reasoning
 backend is attached. The important control result is that all profiles execute
 the same semantics and expose their measured overhead. Larger corpora and live
 reasoning are expected to separate the profiles more clearly.
+
+## v4 Application Traces
+
+The v4 fixture is independent of LongMemEval and covers infrastructure spend,
+project phase transitions, launch-date deltas, positive/negative hotel
+constraints, and completed-versus-planned agent tasks. It ran 100 repetitions
+per profile with the deterministic 64-dimensional hash provider.
+
+| Profile | Mean ms | P95 ms | Context tokens | Rounds | Sufficient | Proof | Scalar quality |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| fast | 2.273 | 3.115 | 628.40 | 1.000 | 1.0000 | 1.0000 | 1.0000 |
+| balanced | 2.328 | 3.135 | 628.40 | 1.000 | 1.0000 | 1.0000 | 1.0000 |
+| quality | 2.652 | 4.598 | 626.80 | 1.200 | 0.8000 | 1.0000 | 1.0000 |
+| max_quality | 2.988 | 6.225 | 626.80 | 1.400 | 0.8000 | 1.0000 | 1.0000 |
+
+Across profiles, mean measured coverage confidence was 1.0000, raw recovery was
+not needed, and packets contained 1.6 evidence slots on average. The stricter
+profiles deliberately continue retrieval for the recommendation case because
+its operator confidence floor is higher; exact scalar outputs remain unchanged.
+This fixture is a regression/generalization control, not a claim about broad
+application accuracy.

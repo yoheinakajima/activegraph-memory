@@ -1,0 +1,37 @@
+{
+  "turns": [
+    {"turn_id":"finance-1#0","session_id":"finance-1","session_date":"2024-01-05","session_idx":0,"turn_idx":0,"role":"user","content":"I spent $120 on infrastructure hosting.","text":"[Session finance-1 (2024-01-05)] user: I spent $120 on infrastructure hosting."},
+    {"turn_id":"finance-2#0","session_id":"finance-2","session_date":"2024-01-06","session_idx":1,"turn_idx":0,"role":"user","content":"I spent $80 on the infrastructure database.","text":"[Session finance-2 (2024-01-06)] user: I spent $80 on the infrastructure database."},
+    {"turn_id":"finance-plan#0","session_id":"finance-plan","session_date":"2024-01-07","session_idx":2,"turn_idx":0,"role":"user","content":"I plan to spend $40 on a monitoring tool.","text":"[Session finance-plan (2024-01-07)] user: I plan to spend $40 on a monitoring tool."},
+    {"turn_id":"project-old#0","session_id":"project-old","session_date":"2024-02-01","session_idx":3,"turn_idx":0,"role":"user","content":"Project Atlas is in design.","text":"[Session project-old (2024-02-01)] user: Project Atlas is in design."},
+    {"turn_id":"project-new#0","session_id":"project-new","session_date":"2024-02-10","session_idx":4,"turn_idx":0,"role":"user","content":"Project Atlas is now in implementation.","text":"[Session project-new (2024-02-10)] user: Project Atlas is now in implementation."},
+    {"turn_id":"schedule-a#0","session_id":"schedule-a","session_date":"2024-03-01","session_idx":5,"turn_idx":0,"role":"user","content":"We launched Alpha on March 1st.","text":"[Session schedule-a (2024-03-01)] user: We launched Alpha on March 1st."},
+    {"turn_id":"schedule-b#0","session_id":"schedule-b","session_date":"2024-03-15","session_idx":6,"turn_idx":0,"role":"user","content":"We launched Beta on March 15th.","text":"[Session schedule-b (2024-03-15)] user: We launched Beta on March 15th."},
+    {"turn_id":"preference-positive#0","session_id":"preference-positive","session_date":"2024-04-01","session_idx":7,"turn_idx":0,"role":"user","content":"I prefer quiet hotels near train stations.","text":"[Session preference-positive (2024-04-01)] user: I prefer quiet hotels near train stations."},
+    {"turn_id":"preference-negative#0","session_id":"preference-negative","session_date":"2024-04-02","session_idx":8,"turn_idx":0,"role":"user","content":"I avoid noisy hotels and nightclubs.","text":"[Session preference-negative (2024-04-02)] user: I avoid noisy hotels and nightclubs."},
+    {"turn_id":"task-1#0","session_id":"task-1","session_date":"2024-05-01","session_idx":9,"turn_idx":0,"role":"user","content":"The agent completed the data import task.","text":"[Session task-1 (2024-05-01)] user: The agent completed the data import task."},
+    {"turn_id":"task-2#0","session_id":"task-2","session_date":"2024-05-02","session_idx":10,"turn_idx":0,"role":"user","content":"The agent completed the schema migration task.","text":"[Session task-2 (2024-05-02)] user: The agent completed the schema migration task."},
+    {"turn_id":"task-plan#0","session_id":"task-plan","session_date":"2024-05-03","session_idx":11,"turn_idx":0,"role":"user","content":"The agent plans to build the dashboard task next.","text":"[Session task-plan (2024-05-03)] user: The agent plans to build the dashboard task next."}
+  ],
+  "claims": [
+    {"text":"The user spent $120 on infrastructure hosting.","session_id":"finance-1","session_date":"2024-01-05","session_idx":0,"role":"user","mentioned_turn_idxs":[0]},
+    {"text":"The user spent $80 on the infrastructure database.","session_id":"finance-2","session_date":"2024-01-06","session_idx":1,"role":"user","mentioned_turn_idxs":[0]},
+    {"text":"The user plans to spend $40 on a monitoring tool.","session_id":"finance-plan","session_date":"2024-01-07","session_idx":2,"role":"user","mentioned_turn_idxs":[0]},
+    {"text":"Project Atlas is in design.","session_id":"project-old","session_date":"2024-02-01","session_idx":3,"role":"user","mentioned_turn_idxs":[0],"metadata":{"state_key":"project-atlas|phase"}},
+    {"text":"Project Atlas is now in implementation.","session_id":"project-new","session_date":"2024-02-10","session_idx":4,"role":"user","mentioned_turn_idxs":[0],"metadata":{"state_key":"project-atlas|phase"}},
+    {"text":"The team launched Alpha on March 1st.","session_id":"schedule-a","session_date":"2024-03-01","session_idx":5,"role":"user","mentioned_turn_idxs":[0]},
+    {"text":"The team launched Beta on March 15th.","session_id":"schedule-b","session_date":"2024-03-15","session_idx":6,"role":"user","mentioned_turn_idxs":[0]},
+    {"text":"The user prefers quiet hotels near train stations.","session_id":"preference-positive","session_date":"2024-04-01","session_idx":7,"role":"user","mentioned_turn_idxs":[0]},
+    {"text":"The user avoids noisy hotels and nightclubs.","session_id":"preference-negative","session_date":"2024-04-02","session_idx":8,"role":"user","mentioned_turn_idxs":[0]},
+    {"text":"The agent completed the data import task.","session_id":"task-1","session_date":"2024-05-01","session_idx":9,"role":"user","mentioned_turn_idxs":[0]},
+    {"text":"The agent completed the schema migration task.","session_id":"task-2","session_date":"2024-05-02","session_idx":10,"role":"user","mentioned_turn_idxs":[0]},
+    {"text":"The agent plans to build the dashboard task next.","session_id":"task-plan","session_date":"2024-05-03","session_idx":11,"role":"user","mentioned_turn_idxs":[0]}
+  ],
+  "cases": [
+    {"case_id":"finance-sum","query":"How much total money did I spend on infrastructure?","question_date":"2024-06-01","expected":"$200"},
+    {"case_id":"project-current","query":"What is the current phase of Project Atlas?","question_date":"2024-06-01","metadata":{"expected_context_contains":["Project Atlas is now in implementation"]}},
+    {"case_id":"schedule-delta","query":"How many days elapsed between Alpha launch and Beta launch?","question_date":"2024-06-01","expected":"14 days"},
+    {"case_id":"travel-preference","query":"Recommend a hotel for my next trip.","question_date":"2024-06-01","metadata":{"expected_context_contains":["quiet hotels","noisy hotels"]}},
+    {"case_id":"agent-completed-count","query":"How many tasks did the agent complete?","question_date":"2024-06-01","expected":"2"}
+  ]
+}

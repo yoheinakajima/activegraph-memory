@@ -57,7 +57,10 @@ class QueryAnalysis(BaseModel):
 
     @property
     def requires_exhaustive_coverage(self) -> bool:
-        return any(operator in {"count", "sum", "max", "negative_existence"} for operator in self.operators)
+        return any(
+            operator in {"count", "sum", "max", "negative_existence", "recommend"}
+            for operator in self.operators
+        )
 
     @property
     def requires_reasoning(self) -> bool:
@@ -268,7 +271,7 @@ def _proof_requirements(operators: list[MemoryOperator], operands: list[str]) ->
     if any(op in {"order", "date_delta"} for op in operators):
         requirements.extend(["event_time_resolution", "operand_coverage"])
     if "recommend" in operators:
-        requirements.extend(["preference_scope", "constraint_coverage"])
+        requirements.extend(["preference_scope", "constraint_coverage", "preference_coverage"])
     if "ordinal" in operators:
         requirements.extend(["list_identity", "ordinal_position"])
     if operands:

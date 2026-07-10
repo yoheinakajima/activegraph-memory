@@ -126,6 +126,7 @@ Important switches include:
 - `compact_context`
 - `adaptive_retrieval`
 - `min_sufficiency_confidence`
+- `operator_min_confidence`
 - `source_budget_ratio`
 - `max_packet_rows`
 - `candidate_answer_mode`
@@ -152,6 +153,9 @@ Consumers should preserve its labels when passing context to an answer model:
 - Under `candidate_answer_mode="calibrated"`, a candidate is omitted unless
   proof, deterministic sufficiency, execution confidence, and conflict checks
   all pass the profile threshold. Evidence rows remain available either way.
+- Use `calibrate_operator_thresholds` only with held-out application traces.
+  It returns threshold, sample count, accepted count, precision, and coverage
+  per operator and can be merged with `apply_operator_calibration`.
 
 This contract is provider-neutral. It does not ask the answer model to invent
 facts, and every candidate remains traceable to claim and source-turn ids.

@@ -23,10 +23,10 @@ source log + accepted memory items
   -> hybrid candidate generation
   -> graph signal propagation
   -> deterministic operator execution
+  -> extraction/compilation/selection coverage audit
   -> confidence/proof assessment
   -> targeted retrieval while coverage is insufficient
   -> calibrated candidate + provenance-preserving context
-  -> provenance-preserving context
 ```
 
 ## Install
@@ -94,7 +94,10 @@ print(result.metadata["compiled_evidence"])
 print(result.metadata["pipeline_telemetry"])
 ```
 
-The compiled evidence packet is placed before raw provenance. A computed answer
+The compiled evidence packet is placed before raw provenance. Aggregate,
+temporal, and recommendation packets expose named evidence slots so readers
+preserve required people, dates, quantities, positive preferences, and negative
+constraints. A computed answer
 is labeled proof-complete only when its operator-specific evidence fields are
 present. Proof completion is structural, not a claim that the answer is
 semantically correct; readers must check every candidate against its cited rows
@@ -212,6 +215,29 @@ Pack settings can override individual reasoning stages through
 `GraphMemoryRepository.from_activegraph(...)` applies those profile overrides,
 provider model choices, and extraction/temporal/conflict switches directly.
 
+Per-operator confidence floors are available through
+`operator_min_confidence`. Applications can fit them on held-out traces instead
+of copying the built-in risk priors:
+
+```python
+from activegraph_memory import (
+    apply_operator_calibration,
+    calibrate_operator_thresholds,
+    runtime_profile,
+)
+
+calibration = calibrate_operator_thresholds(
+    held_out_records,  # operator, confidence, correct, proof_complete
+    target_precision=0.9,
+)
+profile = apply_operator_calibration(runtime_profile("quality"), calibration)
+```
+
+Coverage audits separately report query-relevant source candidates represented
+by extraction, typed compilation, compiled selection, and reader-visible
+recovery. Recovery can put a missing raw source in context, but cannot make a
+computed count, sum, or recommendation proof complete.
+
 ## ActiveGraph Persistence
 
 `GraphMemoryRepository` materializes replayable source turns, claims, entities,
@@ -314,6 +340,17 @@ See [docs/benchmark-results.md](docs/benchmark-results.md) for the latest
 reproducible control-plane result and its limitations. For live embeddings or
 reasoning, use `benchmark_profiles(..., runtime_factory=...)` so the report
 includes provider-reported tokens and caller-supplied pricing.
+
+The benchmark-independent v4 fixture uses the same CLI:
+
+```bash
+python3.11 -m activegraph_memory.benchmark_cli \
+  --input examples/v4_application_traces.json \
+  --profiles fast,balanced,quality,max_quality \
+  --repetitions 100 \
+  --hash-embeddings \
+  --score-expected
+```
 
 ## Pack Surface
 
