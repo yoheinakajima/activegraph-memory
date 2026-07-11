@@ -23,6 +23,13 @@ from .calibration import (
     calibrate_operator_thresholds,
 )
 from .coverage_audit import SourceCoverageAudit, audit_source_coverage
+from .ingestion_coverage import extraction_run_source_ids, extraction_runs_cover
+from .shared_extraction import (
+    CompatibilityMemoryExtractor,
+    SharedExtractionActive,
+    claims_from_shared_annotations,
+    shared_extraction_result,
+)
 from .benchmarking import (
     MemoryBenchmarkCase,
     MemoryBenchmarkResult,
@@ -137,6 +144,12 @@ __all__ = [
     "RetrievalSignals",
     "StageReasoningPolicy",
     "SourceCoverageAudit",
+    "CompatibilityMemoryExtractor",
+    "SharedExtractionActive",
+    "claims_from_shared_annotations",
+    "shared_extraction_result",
+    "extraction_run_source_ids",
+    "extraction_runs_cover",
     "analyze_query",
     "apply_operator_calibration",
     "audit_source_coverage",

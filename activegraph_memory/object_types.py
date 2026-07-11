@@ -209,7 +209,15 @@ class MemoryEvaluation(StrictMemoryModel):
 
 
 class MemoryEntity(StrictMemoryModel):
-    """Canonical entity resolved from one or more source mentions."""
+    """DEPRECATED (ADR 0026 step 5): canonical entity resolved from mentions.
+
+    Entity-mention ownership and canonical resolution moved to the shared
+    extraction contract + the entity pack's canonical `entity` ids. New
+    ingestion consumes those ids directly. Existing memory_entity objects
+    are never silently dropped: they are mapped to a canonical `entity`
+    id (``canonical_entity_id`` / ``status="mapped"``) or, when no
+    canonical match exists, marked ``status="superseded"``.
+    """
 
     entity_key: str
     canonical_name: str
@@ -217,6 +225,14 @@ class MemoryEntity(StrictMemoryModel):
     aliases: list[str] = Field(default_factory=list)
     source_claim_ids: list[str] = Field(default_factory=list)
     source_ids: list[str] = Field(default_factory=list)
+    status: str = Field(
+        default="active",
+        description="active | mapped | superseded (ADR 0026 deprecation).",
+    )
+    canonical_entity_id: str | None = Field(
+        default=None,
+        description="The canonical `entity` id this memory_entity maps to, if any.",
+    )
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

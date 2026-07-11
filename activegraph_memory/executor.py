@@ -9,6 +9,7 @@ from typing import Any
 
 from .compiler import MemoryIndex, SourceTurn, claim_tokens, extract_quantity_claims
 from .coverage_audit import SourceCoverageAudit, audit_source_coverage
+from .ingestion_coverage import extraction_run_source_ids, extraction_runs_cover
 from .query_ir import QueryAnalysis
 from .ranking import RetrievalSignals
 from .temporal import extract_temporal_refs
@@ -201,6 +202,7 @@ def _execute_negative_existence(
     q_tokens = (set(analysis.entity_terms) or claim_tokens(analysis.query)) - _NEGATIVE_SCAN_STOPWORDS
     matches = []
     scanned = 0
+    scanned_source_ids: set[str] = set()
     for record in index.claims:
         role = str(record.claim.metadata.get("role") or "unknown")
         if role not in analysis.source_roles:
@@ -209,6 +211,7 @@ def _execute_negative_existence(
         if not _in_window(observed, analysis.time_start, analysis.time_end):
             continue
         scanned += 1
+        scanned_source_ids.update(record.source_turn_ids)
         overlap = _overlap(q_tokens, claim_tokens(record.text))
         dense = signals.claim_scores.get(record.claim_id, 0.0)
         if overlap >= 0.45 or (overlap >= 0.2 and dense > 0.02):
@@ -235,16 +238,23 @@ def _execute_negative_existence(
             }
         ]
         candidate = "No matching evidence was found in the bounded memory scope."
+    # Extraction-run coverage (ADR 0026 step 6): an absence certificate can
+    # only claim source_coverage if the bounded scope it scanned was
+    # actually covered by extraction runs. Vacuously satisfied when no
+    # ingestion stage is recorded.
+    scope_extracted = extraction_runs_cover(index, scanned_source_ids)
+    satisfied_requirements = [
+        "entity_compatibility",
+        "bounded_candidate_set",
+        "absence_certificate",
+    ]
+    if scope_extracted:
+        satisfied_requirements.insert(2, "source_coverage")
     return CompiledEvidence(
         operation="negative-existence/bounded-scan",
         rows=rows,
         candidate_answer=candidate,
-        satisfied_requirements=[
-            "entity_compatibility",
-            "bounded_candidate_set",
-            "source_coverage",
-            "absence_certificate",
-        ],
+        satisfied_requirements=satisfied_requirements,
         selected_claim_ids=[record.claim_id for record in selected],
         selected_turn_ids=[turn_id for record in selected for turn_id in record.source_turn_ids],
         confidence=0.9 if selected else 0.82,
@@ -253,6 +263,7 @@ def _execute_negative_existence(
             "claims_scanned": scanned,
             "matches_found": len(matches),
             "world_level_absence_claim": False,
+            "extraction_run_coverage_complete": scope_extracted,
         },
     )
 
@@ -455,6 +466,7 @@ def _execute_preferences(index: MemoryIndex, analysis: QueryAnalysis, signals: R
         compiled_source_ids=compiled_ids,
         selected_source_ids=selected_ids,
         recovery_source_ids=recovery,
+        extraction_run_source_ids=extraction_run_source_ids(index),
         minimum_ratio=0.85,
         metadata={"operator": "recommend"},
     )
@@ -908,7 +920,19 @@ def _execute_temporal(index: MemoryIndex, analysis: QueryAnalysis, signals: Retr
     satisfied = ["source_provenance"]
     if selected_events or selected_source_turn_ids:
         satisfied.extend(["entity_compatibility", "event_time_resolution"])
-    if len(found_operands) == len(operands) and len(operands) >= 2:
+    # Extraction-run coverage (ADR 0026 step 6): the operands can only be
+    # certified fully found when every source turn they rest on was
+    # actually covered by an extraction run. Vacuously true when no
+    # ingestion stage is recorded (claims supplied directly).
+    operand_turn_ids = set(selected_source_turn_ids)
+    for event in selected_events:
+        operand_turn_ids.update(getattr(event, "source_turn_ids", ()) or ())
+    operands_extracted = extraction_runs_cover(index, operand_turn_ids)
+    if (
+        len(found_operands) == len(operands)
+        and len(operands) >= 2
+        and operands_extracted
+    ):
         satisfied.extend(["operand_coverage", "all_operands_found"])
     slots = []
     for operand in operands:
@@ -1412,6 +1436,7 @@ def _aggregate_source_coverage(
         compiled_source_ids=compiled_ids,
         selected_source_ids=selected_ids,
         recovery_source_ids=recovery,
+        extraction_run_source_ids=extraction_run_source_ids(index),
         minimum_ratio=0.9,
         metadata={"operator": analysis.primary_operator},
     )

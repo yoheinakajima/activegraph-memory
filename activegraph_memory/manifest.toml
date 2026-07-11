@@ -15,7 +15,7 @@ source_url = "https://github.com/yoheinakajima/activegraph-memory"
 created_at = "2026-07-08T00:00:00Z"
 
 [pack.integrity]
-content_hash = "sha256:eb11fa0af8ec903ad2706e06b21008184a23f06b9b9a66fb58738b05a4189d0b"
+content_hash = "sha256:5897431b9b078326e8d0097ed260a7dc9831cf3b8bcef113cb8497fcd8962674"
 
 [dependencies]
 activegraph = ">=1.5,<2.0"
@@ -24,15 +24,18 @@ python-deps = ["pydantic>=2.0"]
 
 [dependencies.packs]
 core = ">=0.1"
-
-[dependencies.optional-packs]
+# ADR 0026 steps 5-7: the pack form consumes the shared annotation layer
+# and canonical entity ids, so these are required (not optional) for the
+# annotation-consuming ingestion behaviors.
 memory_gateway = ">=0.4"
+activity_normalizer = ">=0.2"
+semantic_extraction = ">=0.1"
 entity = ">=0.1"
 
 [surface]
 object_types = ["memory_claim", "memory_episode", "memory_query", "retrieval_plan", "coverage_report", "evidence_bundle", "memory_answer", "temporal_ref", "quantity_claim", "memory_policy", "memory_evaluation", "memory_entity", "memory_event", "memory_state", "memory_preference", "memory_list_item", "memory_query_analysis", "memory_ingestion_stage", "memory_retrieval_stage", "memory_proof", "memory_benchmark", "memory_embedding", "memory_source_turn", "memory_conflict", "memory_retrieval_assessment"]
 relation_types = ["memory_supports", "memory_contradicts", "memory_supersedes", "memory_has_temporal_ref", "memory_has_quantity", "memory_retrieved_for", "memory_used_as_evidence", "memory_has_coverage", "memory_governed_by_policy", "memory_about", "memory_grounded_in", "memory_version_of", "memory_stage_for", "memory_proves"]
-behaviors = ["memory_query_analyzer", "memory_query_planner"]
+behaviors = ["memory_query_analyzer", "memory_query_planner", "memory_ingest_shared_annotation", "memory_deprecate_entity"]
 tools = ["plan_memory_query", "analyze_memory_query", "list_memory_profiles"]
 settings_schema = "ActiveGraphMemorySettings"
 

@@ -95,4 +95,10 @@ def memory_query_analyzer(event, graph, ctx, *, settings: ActiveGraphMemorySetti
     return analysis_obj
 
 
-BEHAVIORS = [memory_query_analyzer, memory_query_planner]
+from .shared_ingestion import SHARED_INGESTION_BEHAVIORS
+
+BEHAVIORS = [
+    memory_query_analyzer,
+    memory_query_planner,
+    *SHARED_INGESTION_BEHAVIORS,
+]

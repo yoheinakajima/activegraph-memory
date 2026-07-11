@@ -128,6 +128,36 @@ histories are processed in stable, bounded batches (40 turns or 60,000 source
 characters by default), and the result reports aggregate tokens, cost, latency,
 cache state, and per-batch metadata.
 
+### Shared extraction (ADR 0026 steps 5-7)
+
+The pack form consumes the **shared annotation layer** instead of running its
+own extractor. With `consume_shared_extraction=True`, the memory pack requires
+`memory_gateway`, `activity_normalizer`, `semantic_extraction`, and `entity`,
+and:
+
+- **Ingests from annotations.** `memory_ingest_shared_annotation` mints one
+  `memory_claim` from each claim-bearing `semantic_annotation` (assertion,
+  preference, relation, event), grounded in the annotation's evidence. It makes
+  zero provider calls — the facts were already extracted upstream — and is
+  idempotent by shared annotation id (re-extraction/replay creates nothing new).
+- **Consumes canonical entity ids.** Claims reference the entity pack's
+  canonical `entity` ids; memory never re-resolves. `memory_entity` is
+  **deprecated** — existing objects are mapped to a canonical id
+  (`status="mapped"`, `canonical_entity_id` set) or marked superseded, never
+  silently dropped.
+- **Records extraction-run coverage.** Each shared run's source coverage lands
+  on a `memory_ingestion_stage`, and proof completeness for
+  count/sum/temporal/absence reads it: a source no extraction run covered can
+  never certify a computed answer (`audit_source_coverage`'s
+  `extraction_run_ratio`).
+
+The standalone Python API keeps `DeterministicMemoryExtractor` /
+`ActiveGraphLLMMemoryExtractor`, but only behind `CompatibilityMemoryExtractor`
+— when shared extraction is configured the adapter is inert and makes zero
+provider calls; it is never silently active beside shared extraction.
+`claims_from_shared_annotations` converts shared annotations directly into
+claim inputs for the standalone compile path.
+
 ## Compiled Memory
 
 `compile_memory_index` produces:

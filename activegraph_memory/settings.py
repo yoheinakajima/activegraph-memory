@@ -12,6 +12,24 @@ class ActiveGraphMemorySettings(BaseModel):
         default=True,
         description="Allow GraphMemoryRepository to extract claims when callers supply only source turns.",
     )
+    consume_shared_extraction: bool = Field(
+        default=False,
+        description=(
+            "Consume the shared annotation layer (ADR 0026): ingest memory "
+            "claims from semantic_annotation records and canonical entity "
+            "ids instead of running memory's own extractor. When True the "
+            "standalone extractor is kept only as an inert compatibility "
+            "adapter (zero provider calls)."
+        ),
+    )
+    deprecate_memory_entity: bool = Field(
+        default=True,
+        description=(
+            "Deprecate memory_entity in favor of canonical `entity` ids "
+            "(ADR 0026 step 5). Existing memory_entity objects are mapped "
+            "to canonical ids or marked superseded — never silently dropped."
+        ),
+    )
     enable_temporal_resolution: bool = Field(
         default=True,
         description="Compile normalized event-time and valid-time references.",

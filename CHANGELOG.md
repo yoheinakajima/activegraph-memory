@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased — ADR 0026 steps 5-7: memory onto the shared annotation layer
+
+- The pack form consumes the shared annotation layer: new behaviors
+  `memory_ingest_shared_annotation` (mints memory claims from
+  `semantic_annotation` records, consuming canonical `entity` ids, zero
+  provider calls, idempotent by shared annotation id) and
+  `memory_deprecate_entity` (maps legacy `memory_entity` objects to canonical
+  ids — never dropped). Gated by `consume_shared_extraction` (default off).
+- `memory_entity` deprecated with `status` / `canonical_entity_id` fields;
+  existing data is mapped or marked superseded.
+- Extraction-run coverage in proof completeness: `audit_source_coverage` gains
+  an `extraction_run_source_ids` plane (read from `memory_ingestion_stage`
+  records) folded into `confidence`; count/sum/temporal/absence can no longer
+  certify an answer over sources no extraction run covered. Backward compatible
+  — `None` (claims supplied directly) reproduces prior behavior exactly.
+- The standalone extractor is kept only as an explicit
+  `CompatibilityMemoryExtractor`; inert (zero provider calls) when shared
+  extraction is configured. `claims_from_shared_annotations` bridges shared
+  annotations into the standalone compile path.
+- The pack now requires `memory_gateway`, `activity_normalizer`,
+  `semantic_extraction`, and `entity` (previously optional).
+
 ## 0.4.0
 
 - Added query-bounded source coverage audits that separately measure relevant

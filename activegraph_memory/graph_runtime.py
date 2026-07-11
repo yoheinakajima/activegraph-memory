@@ -550,6 +550,20 @@ class GraphMemoryRepository:
                 activegraph_runtime.llm_provider,
                 model=extraction_model,
             )
+        # ADR 0026: when shared extraction is configured, the standalone
+        # extractor is kept only as an inert compatibility adapter — never
+        # silently active beside shared extraction (zero provider calls).
+        consume_shared = bool(
+            settings is not None and getattr(settings, "consume_shared_extraction", False)
+        )
+        if consume_shared:
+            from .extraction import DeterministicMemoryExtractor
+            from .shared_extraction import CompatibilityMemoryExtractor
+
+            extractor = CompatibilityMemoryExtractor(
+                extractor or DeterministicMemoryExtractor(),
+                shared_extraction_active=True,
+            )
         return cls(
             activegraph_runtime.graph,
             runtime=runtime,
