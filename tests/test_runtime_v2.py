@@ -206,6 +206,8 @@ def test_luxury_sum_uses_specific_category_instead_of_all_clothing():
     assert result.metadata["compiled_evidence"]["candidate_answer"] == "$2500"
     assert "Proof-complete candidate" in result.context_text
     assert "Verified candidate" not in result.context_text
+    assert result.context_text.index("I bought a Gucci handbag") < result.context_text.index("[compiled-memory:")
+    assert set(result.metadata["compiled_evidence"]["selected_turn_ids"]) <= set(result.selected_turn_ids)
 
 
 def test_relative_time_lookup_prioritizes_nearby_claims():

@@ -290,16 +290,14 @@ class MemoryRuntime:
                     }
                 )
 
-        _boost_compiled_evidence(signals, evidence)
-        candidate_answer_rendered = _should_render_candidate(self.profile, evidence, assessment)
-        packet = evidence.render(
-            max_rows=self.profile.max_packet_rows if self.profile.compact_context else self.profile.max_packet_rows * 2,
-            include_candidate=candidate_answer_rendered,
-        )
-        packet_tokens = self.token_counter(packet) if packet else 0
+        # Evidence is the retrieval floor. Compiled projections may explain or
+        # calculate over selected sources, but they do not get to boost their
+        # own inputs, consume the source budget, or precede the source text.
+        candidate_answer_rendered = False
+        packet = ""
         requested_budget = max(256, int(strategy_data.get("token_budget") or self.profile.token_budget))
         source_ceiling = max(256, int(requested_budget * self.profile.source_budget_ratio))
-        base_budget = max(256, source_ceiling - packet_tokens - 16)
+        base_budget = source_ceiling
         with telemetry.measure("source_packaging", "provenance_context_assembler") as stage:
             result = retrieve_memory(
                 index,
@@ -317,9 +315,25 @@ class MemoryRuntime:
                 enable_preference_packet=False,
                 allowed_source_roles=set(analysis.source_roles),
             )
-            if packet:
-                result.context_text = f"{packet}\n\n{result.context_text}" if result.context_text else packet
-            if not self.profile.include_raw_sources:
+            candidate_answer_rendered = (
+                _should_render_candidate(self.profile, evidence, assessment)
+                and _compiled_sources_selected(evidence, result)
+            )
+            packet = evidence.render(
+                max_rows=(
+                    self.profile.max_packet_rows
+                    if self.profile.compact_context
+                    else self.profile.max_packet_rows * 2
+                ),
+                include_candidate=candidate_answer_rendered,
+            )
+            if self.profile.include_raw_sources:
+                if packet:
+                    result.context_text = (
+                        f"{result.context_text}\n\n{packet}"
+                        if result.context_text else packet
+                    )
+            else:
                 result.context_text = packet
             stage.output_tokens = self.token_counter(result.context_text)
             stage.candidates_out = len(result.selected_claim_ids) + len(result.selected_turn_ids)
@@ -373,7 +387,10 @@ class MemoryRuntime:
                         allowed_source_roles=set(analysis.source_roles),
                     )
                     if packet:
-                        result.context_text = f"{packet}\n\n{result.context_text}" if result.context_text else packet
+                        result.context_text = (
+                            f"{result.context_text}\n\n{packet}"
+                            if result.context_text else packet
+                        )
                     stage.candidates_in = len(known_claims) + len(known_sources)
                     stage.candidates_out = len(result.selected_claim_ids) + len(result.selected_turn_ids)
                     stage.output_tokens = self.token_counter(result.context_text)
@@ -524,6 +541,18 @@ def _boost_compiled_evidence(signals: RetrievalSignals, evidence: CompiledEviden
         signals.claim_scores[claim_id] = max(1.15, signals.claim_scores.get(claim_id, 0.0))
     for turn_id in evidence.selected_turn_ids:
         signals.turn_scores[turn_id] = max(1.15, signals.turn_scores.get(turn_id, 0.0))
+
+
+def _compiled_sources_selected(evidence: CompiledEvidence, result: MemoryRetrievalResult) -> bool:
+    """A computed candidate is displayable only beside every cited source."""
+    required_claims = set(evidence.selected_claim_ids)
+    required_turns = set(evidence.selected_turn_ids)
+    if not required_claims and not required_turns:
+        return False
+    return (
+        required_claims <= set(result.selected_claim_ids)
+        and required_turns <= set(result.selected_turn_ids)
+    )
 
 
 def _rough_token_count(text: str) -> int:

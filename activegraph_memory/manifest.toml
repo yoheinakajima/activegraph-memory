@@ -15,7 +15,7 @@ source_url = "https://github.com/yoheinakajima/activegraph-memory"
 created_at = "2026-07-08T00:00:00Z"
 
 [pack.integrity]
-content_hash = "sha256:eb11fa0af8ec903ad2706e06b21008184a23f06b9b9a66fb58738b05a4189d0b"
+content_hash = "sha256:e3b980f84a6aa2bd484224245548ebb4eb424c96c94fb502c3410a2f265980c3"
 
 [dependencies]
 activegraph = ">=1.5,<2.0"

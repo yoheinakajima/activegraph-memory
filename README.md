@@ -110,6 +110,12 @@ keeps one lossless fact per source turn, while a typed extractor can atomize
 facts and supply entities, predicates, modality, polarity, event time,
 quantities, state identity, preference scope, and confidence.
 
+The runtime is evidence-first: source retrieval receives its full configured
+budget and source text is packaged before compiled rows. A compiled candidate
+is rendered only when every claim/turn it cites is present in the selected
+source packet. Compilation is therefore an optional Tier 2 augmentation, never
+an authority that can displace or contradict its own Tier 0/1 evidence.
+
 ```python
 from activegraph_memory import DeterministicMemoryExtractor, extract_claim_inputs
 
