@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Make retrieval evidence-first: compiled projections no longer self-boost or
+  consume the raw-source budget, source context renders first, and computed
+  candidates require all cited claims and turns in the selected packet.
+
 ## 0.4.0
 
 - Added query-bounded source coverage audits that separately measure relevant
